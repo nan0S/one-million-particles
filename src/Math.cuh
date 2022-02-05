@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ostream>
+#include <cmath>
 
 struct vec2
 {
@@ -8,13 +9,13 @@ struct vec2
    float y;
 };
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator+(vec2 u, vec2 v)
 {
    return { u.x + v.x, u.y + v.y };
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator+=(vec2& u, vec2 v)
 {
    u.x += v.x;
@@ -22,19 +23,19 @@ inline vec2 operator+=(vec2& u, vec2 v)
    return u;
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator-(vec2 u, vec2 v)
 {
    return { u.x - v.x, u.y - v.y };
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator-(vec2 u)
 {
    return { -u.x, -u.y };
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator-=(vec2& u, vec2 v)
 {
    u.x -= v.x;
@@ -42,19 +43,19 @@ inline vec2 operator-=(vec2& u, vec2 v)
    return u;
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator*(float x, vec2 u)
 {
    return { x * u.x, x * u.y };
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2 operator*(vec2 u, float x)
 {
    return x * u;
 }
 
-__device__ __host__
+__host__ __device__
 inline vec2& operator*=(vec2& u, float x)
 {
    u.x *= x;
@@ -62,16 +63,16 @@ inline vec2& operator*=(vec2& u, float x)
    return u;
 }
 
-__device__ __host__
+__host__ __device__
 inline float magnitude(vec2 u)
 {
    return u.x * u.x + u.y * u.y;
 }
 
-__device__ __host__
+__host__ __device__
 inline float length(vec2 u)
 {
-   return sqrt(magnitude(u));
+   return std::sqrt(magnitude(u));
 }
 
 inline std::ostream& operator<<(std::ostream& out, vec2 u)
