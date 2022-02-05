@@ -126,8 +126,8 @@ constexpr float MASS_MIN = 0.5f;
 constexpr float MASS_MAX = 7.0f;
 constexpr float DAMP_FACTOR = 0.995f;
 constexpr float DAMP_INTERVAL = 1.0f / 30;
-constexpr float LOCAL_EXP_STRENGTH_MAX = 1.5f;
-constexpr float GLOBAL_EXP_STRENGTH_MAX = 3.0f;
+constexpr float LOCAL_EXP_STRENGTH_MAX = 5.0f;
+constexpr float GLOBAL_EXP_STRENGTH_MAX = 10.0f;
 constexpr float EXP_LOADING_TIME = 2.0f;
 constexpr float COLOR_SPEED_CAP = 10.0f;
 
