@@ -2,8 +2,7 @@
 #include <iomanip>
 #include <cassert>
 #include <cstring>
-// TODO: remove
-#include <random>
+#include <sstream>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -22,6 +21,16 @@
 #define NTHREADS 1024
 #define NPERTHREAD 1024
 
+#define GET_REQUIRED_ARGUMENT(flag, name) \
+   if (strcmp(flag, #name) == 0) \
+   { \
+      if (i == argc - 1) \
+         ERROR("Argument for flag '" #name "' is required."); \
+      std::stringstream ss(argv[++i]); \
+      ss >> name; \
+      continue; \
+   }
+
 /* structs */
 struct comma_numpunct : public std::numpunct<char>
 {
@@ -39,19 +48,32 @@ __global__
 void generateParticles(vec2* pos, vec2* vel, float* imass, const int N,
                        const float imass_min, const float imass_diff,
                        const unsigned long long seed);
+__device__
+vec2 getRandomUnitVector(curandState* state);
 __global__
 void updateParticles(vec2* pos, vec2* vel, float* imass, const int N,
                      vec2 mpos, const float dt, const float pull_strength,
-                     const float particle_speed, const float damp,
+                     const float speed_mult, const float damp,
                      const bool is_clicked1, const bool is_clicked2,
                      const float click1_strength, const float click2_strength);
 
 /* constants */
 const char* USAGE_STR =
-"Usage: ./OneMillionParticles [OPTION]... [N_PARTICLES]\n\n"
-"Run n-particles simulation that followe mouse pointer.\n\n"
+"Usage: ./OneMillionParticles [OPTION]...\n\n"
+"Run particle simulation that follow mouse pointer.\n\n"
 "list of possible options:\n"
-"   --help        print this help";
+"   --n_particles         number of particles\n"
+"   --seed                random seed\n"
+"   --pull_strength       pull force strength\n"
+"   --speed_mult          particle speed multiplier\n"
+"   --mass_min            minimum particle mass\n"
+"   --mass_max            maximum particle mass\n"
+"   --damp_factor         particle's velocity damp factor\n"
+"   --damp_interval       particle's velocity damp interval\n"
+"   --local_exp_strength  local explosion (mouse1) punch/strength\n"
+"   --global_exp_strength global explosion (mouse2) punch/strength\n"
+"   --color_speed_cap     speed threshold for the 'fastest' color\n"
+"   --help                print this help";
 
 const char* VERTEX_SHADER_SOURCE =
 R"(
@@ -59,29 +81,34 @@ R"(
 
 layout (location = 0) in vec2 v_Pos;
 layout (location = 1) in vec2 v_Vel;
+layout (location = 2) in float v_IMass;
 
 out vec4 v_Color;
 
 uniform float max_speed;
+uniform float imax_speed;
 
 void main()
 {
    gl_Position = vec4(v_Pos, 0, 1);
-   float speed = length(v_Vel);
-   float hue;
-   if (speed >= max_speed)
-      hue = 0;
-   else
-      hue = (max_speed - speed) / max_speed * 240;
-   float val = hue / 60;
-   if (hue < 60)
-      v_Color = vec4(1, val, 0, 1);
-   else if (hue < 120)
-      v_Color = vec4(2 - val, 1, 0, 1);
-   else if (hue < 180)
-      v_Color = vec4(0, 1, val - 2, 1);
-   else
-      v_Color = vec4(0, 4 - val, 1, 1);
+   gl_PointSize = (1 / 3.5f) / v_IMass;
+   {
+      float speed = length(v_Vel);
+      float hue;
+      if (speed >= max_speed)
+         hue = 0;
+      else
+         hue = (max_speed - speed) * imax_speed * 240;
+      float val = hue / 60;
+      if (hue < 60)
+         v_Color = vec4(1, val, 0, 1);
+      else if (hue < 120)
+         v_Color = vec4(2 - val, 1, 0, 1);
+      else if (hue < 180)
+         v_Color = vec4(0, 1, val - 2, 1);
+      else
+         v_Color = vec4(0, 4 - val, 1, 1);
+   }
 }
 )";
 
@@ -104,16 +131,16 @@ constexpr int WINDOW_HEIGHT = 720;
 constexpr float TIME_BETWEEN_FPS_REPORT = 0.2f;
 
 constexpr size_t N_PARTICLES = 1'000'000;
-constexpr float PULL_STRENGTH = 1.f;
-constexpr float PARTICLE_SPEED = 1.f;
 constexpr unsigned long long SEED = 1234ull;
+constexpr float PULL_STRENGTH = 5.f;
+constexpr float SPEED_MULT = 1.f;
 constexpr float MASS_MIN = 0.5f;
-constexpr float MASS_MAX = 10.0f;
+constexpr float MASS_MAX = 7.0f;
 constexpr float DAMP_FACTOR = 0.995f;
 constexpr float DAMP_INTERVAL = 1.0f / 30;
-constexpr float CLICK1_STRENGTH = 1.5f;
-constexpr float CLICK2_STRENGTH = 3.0f;
-constexpr float MAX_SPEED = 10.0f;
+constexpr float LOCAL_EXP_STRENGTH = 1.5f;
+constexpr float GLOBAL_EXP_STRENGTH = 3.0f;
+constexpr float COLOR_SPEED_CAP = 10.0f;
 
 /* variables */
 int width, height;
@@ -130,8 +157,16 @@ int main(int argc, char* argv[])
    assert(argc > 0);
 
    size_t n_particles = N_PARTICLES;
+   unsigned long long seed = SEED;
    float pull_strength = PULL_STRENGTH;
-   float particle_speed = PARTICLE_SPEED;
+   float speed_mult = SPEED_MULT;
+   float mass_min = MASS_MIN;
+   float mass_max = MASS_MAX;
+   float damp_factor = DAMP_FACTOR;
+   float damp_interval = DAMP_INTERVAL;
+   float local_exp_strength = LOCAL_EXP_STRENGTH;
+   float global_exp_strength = GLOBAL_EXP_STRENGTH;
+   float color_speed_cap = COLOR_SPEED_CAP;
 
    /* Parse program arguments */
    int pivot_idx = 1;
@@ -143,26 +178,27 @@ int main(int argc, char* argv[])
          std::swap(argv[i], argv[pivot_idx++]);
          continue;
       }
-      const char* flag = (arg[1] == '-' ? arg + 2 : arg + 1);
-      if (strcmp(flag, "n_particles") == 0)
+      const char* flag;
+      if (arg[1] == '-')
       {
-         if (i == argc - 1)
-            ERROR("Argument for flag '", arg, "' is required.");
-         n_particles = std::stoull(argv[++i]);
+         if (arg[2] == '\0')
+            break;
+         flag = arg + 2;
       }
-      else if (strcmp(flag, "pull_strength") == 0)
-      {
-         if (i == argc - 1)
-            ERROR("Argument for flag '", arg, "' is required.");
-         pull_strength = std::stof(argv[++i]);
-      }
-      else if (strcmp(flag, "particle_speed") == 0)
-      {
-         if (i == argc - 1)
-            ERROR("Argument for flag '", arg, "' is required.");
-         particle_speed = std::stof(argv[++i]);
-      }
-      else if (strcmp(flag, "help") == 0)
+      else
+         flag = arg + 1;
+      GET_REQUIRED_ARGUMENT(flag, n_particles);
+      GET_REQUIRED_ARGUMENT(flag, seed);
+      GET_REQUIRED_ARGUMENT(flag, pull_strength);
+      GET_REQUIRED_ARGUMENT(flag, speed_mult);
+      GET_REQUIRED_ARGUMENT(flag, mass_min);
+      GET_REQUIRED_ARGUMENT(flag, mass_max);
+      GET_REQUIRED_ARGUMENT(flag, damp_factor);
+      GET_REQUIRED_ARGUMENT(flag, damp_interval);
+      GET_REQUIRED_ARGUMENT(flag, local_exp_strength);
+      GET_REQUIRED_ARGUMENT(flag, global_exp_strength);
+      GET_REQUIRED_ARGUMENT(flag, color_speed_cap);
+      if (strcmp(flag, "help") == 0)
       {
          print(USAGE_STR);
          exit(EXIT_SUCCESS);
@@ -181,7 +217,6 @@ int main(int argc, char* argv[])
    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-
    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
                                          "OneMillionParticles", NULL, NULL);
    if (window == NULL)
@@ -224,19 +259,25 @@ int main(int argc, char* argv[])
    GL_CALL(glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
                                 sizeof(vec2),
                                 reinterpret_cast<const void*>(n_particles * sizeof(vec2))));
+   GL_CALL(glEnableVertexAttribArray(2));
+   GL_CALL(glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE,
+                                sizeof(float),
+                                reinterpret_cast<const void*>(2 * n_particles * sizeof(vec2))));
 
    GLuint shader = Graphics::compileShader(VERTEX_SHADER_SOURCE,
                                            FRAGMENT_SHADER_SOURCE);
    GL_CALL(glUseProgram(shader));
    {
       GL_CALL(GLint max_speed_loc = glGetUniformLocation(shader, "max_speed"));
-      GL_CALL(glUniform1f(max_speed_loc, MAX_SPEED));
+      GL_CALL(glUniform1f(max_speed_loc, COLOR_SPEED_CAP));
+      GL_CALL(GLint imax_speed_loc = glGetUniformLocation(shader, "imax_speed"));
+      GL_CALL(glUniform1f(imax_speed_loc, 1.0f / COLOR_SPEED_CAP));
    }
 
    /* Setup CUDA. */
    cudaGraphicsResource_t resource;
    CUDA_CALL(cudaGraphicsGLRegisterBuffer(&resource, vbo,
-                                         cudaGraphicsRegisterFlagsNone));
+                                          cudaGraphicsRegisterFlagsNone));
 
    /* Initialize particles. */
    auto iceil = [](size_t x, size_t d) { return (x + d - 1) / d; };
@@ -249,13 +290,12 @@ int main(int argc, char* argv[])
       vec2* pos = reinterpret_cast<vec2*>(d_buffer);
       vec2* vel = reinterpret_cast<vec2*>(pos + n_particles);
       float* imass = reinterpret_cast<float*>(vel + n_particles);
-
       size_t spawn_total = iceil(n_particles, NPERTHREAD);
       size_t nblocks = iceil(spawn_total, NTHREADS);
-      float imass_min = 1.0f / MASS_MAX, imass_max = 1.0f / MASS_MIN;
+      float imass_min = 1.0f / mass_max, imass_max = 1.0f / mass_min;
       float imass_diff = imass_max - imass_min;
       CUDA_CALL(generateParticles<<<nblocks, NTHREADS>>>(pos, vel, imass, n_particles,
-                                                         imass_min, imass_diff, SEED));
+                                                         imass_min, imass_diff, seed));
       CUDA_CALL(cudaDeviceSynchronize());
       CUDA_CALL(cudaGraphicsUnmapResources(1, &resource));
    }
@@ -274,13 +314,13 @@ int main(int argc, char* argv[])
       GL_CALL(glClear(GL_COLOR_BUFFER_BIT));
 
       /* Handle input. */
-      bool is_clicked1, is_clicked2;
+      bool is_local_exp, is_global_exp;
       {
          int click1_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1);
-         is_clicked1 = click1_state == GLFW_PRESS && last_click1_state == GLFW_RELEASE;
+         is_local_exp = click1_state == GLFW_PRESS && last_click1_state == GLFW_RELEASE;
          last_click1_state = click1_state;
          int click2_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2);
-         is_clicked2 = click2_state == GLFW_PRESS && last_click2_state == GLFW_RELEASE;
+         is_global_exp = click2_state == GLFW_PRESS && last_click2_state == GLFW_RELEASE;
          last_click2_state = click2_state;
       }
 
@@ -306,9 +346,9 @@ int main(int argc, char* argv[])
       {
          float now = glfwGetTime();
          float passed = now - last_damp_time;
-         if (passed >= DAMP_INTERVAL)
+         if (passed >= damp_interval)
          {
-            damp = DAMP_FACTOR;
+            damp = damp_factor;
             last_damp_time = now;
          }
          else
@@ -328,9 +368,10 @@ int main(int argc, char* argv[])
          size_t nblocks = iceil(n_particles, NTHREADS);
          CUDA_CALL(updateParticles<<<nblocks, NTHREADS>>>(pos, vel, imass,
                                                           n_particles, mpos, dt,
-                                                          pull_strength, particle_speed,
-                                                          damp, is_clicked1, is_clicked2,
-                                                          CLICK1_STRENGTH, CLICK2_STRENGTH));
+                                                          pull_strength, speed_mult,
+                                                          damp, is_local_exp, is_global_exp,
+                                                          local_exp_strength,
+                                                          global_exp_strength));
          CUDA_CALL(cudaDeviceSynchronize());
          CUDA_CALL(cudaGraphicsUnmapResources(1, &resource));
       }
@@ -357,6 +398,7 @@ int main(int argc, char* argv[])
    }
 
    CUDA_CALL(cudaGraphicsUnregisterResource(resource));
+   CUDA_CALL(cudaDeviceReset());
    GL_CALL(glDeleteBuffers(1, &vbo));
    GL_CALL(glDeleteVertexArrays(1, &vao));
    glfwTerminate();
@@ -396,23 +438,28 @@ void generateParticles(vec2* pos, vec2* vel, float* imass, const int N,
    curand_init(seed, idx, 0, &state);
    for (int i = 0; i < NPERTHREAD && idx < N; ++i)
    {
-      float pos_a = 2 * PI * curand_uniform(&state);
-      float pos_m = curand_uniform(&state);
-      pos[idx] = { pos_m * cos(pos_a), pos_m * sin(pos_a) };
-      float vel_a = 2 * PI * curand_uniform(&state);
-      float vel_m = curand_uniform(&state);
-      vel[idx] = { vel_m * cos(vel_a), vel_m * sin(vel_a) };
+      pos[idx] = getRandomUnitVector(&state);
+      vel[idx] = getRandomUnitVector(&state);
       imass[idx] = imass_min + imass_diff * curand_uniform(&state);
       idx += blockDim.x;
    }
 }
 
+__device__
+vec2 getRandomUnitVector(curandState* state)
+{
+   float angle = 2 * PI * curand_uniform(state);
+   float len = curand_uniform(state);
+   return len * vec2{ cos(angle), sin(angle) };
+}
+
 __global__
 void updateParticles(vec2* pos, vec2* vel, float* imass, const int N,
                      vec2 mpos, const float dt, const float pull_strength,
-                     const float particle_speed, const float damp,
-                     const bool is_clicked1, const bool is_clicked2,
-                     const float click1_strength, const float click2_strength)
+                     const float speed_mult, const float damp,
+                     const bool is_local_exp, const bool is_global_exp,
+                     const float local_exp_strength,
+                     const float global_exp_strength)
 {
    size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
    if (idx >= N)
@@ -425,13 +472,13 @@ void updateParticles(vec2* pos, vec2* vel, float* imass, const int N,
    vec2 f = mpos - p;
    float f_mult = im * pull_strength * dt;
    v += f_mult * f;
-   if (is_clicked1)
-      v -= (im * click1_strength / magnitude(f)) * f;
-   if (is_clicked2)
-      v -= (im * click2_strength / length(f)) * f;
+   if (is_local_exp)
+      v -= (im * local_exp_strength / magnitude(f)) * f;
+   if (is_global_exp)
+      v -= (im * global_exp_strength / length(f)) * f;
    v *= damp;
    
-   float v_mult = particle_speed * dt;
+   float v_mult = speed_mult * dt;
    p += v_mult * v;
 
    pos[idx] = p;
