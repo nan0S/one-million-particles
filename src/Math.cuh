@@ -3,6 +3,8 @@
 #include <ostream>
 #include <cmath>
 
+#include <cuda_runtime.h>
+
 struct vec2
 {
    float x;

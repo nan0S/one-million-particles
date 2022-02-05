@@ -29,18 +29,16 @@ namespace CUDA
                         const float local_exp_strength,
                         const float global_exp_strength);
 
-   /* variables */
-   cudaGraphicsResource_t resource;
-
-   void init(GLuint vbo, const size_t n_particles, const float mass_min,
-             const float mass_max, const unsigned long long seed)
+   State init(GLuint vbo, const size_t n_particles, const float mass_min,
+              const float mass_max, const unsigned long long seed)
    {
-      CUDA_CALL(cudaGraphicsGLRegisterBuffer(&resource, vbo,
+      State state;
+      CUDA_CALL(cudaGraphicsGLRegisterBuffer(&state.resource, vbo,
                                              cudaGraphicsRegisterFlagsNone));
-      CUDA_CALL(cudaGraphicsMapResources(1, &resource));
+      CUDA_CALL(cudaGraphicsMapResources(1, &state.resource));
       void* d_buffer;
       size_t size;
-      CUDA_CALL(cudaGraphicsResourceGetMappedPointer(&d_buffer, &size, resource));
+      CUDA_CALL(cudaGraphicsResourceGetMappedPointer(&d_buffer, &size, state.resource));
       vec2* pos = reinterpret_cast<vec2*>(d_buffer);
       vec2* vel = reinterpret_cast<vec2*>(pos + n_particles);
       float* imass = reinterpret_cast<float*>(vel + n_particles);
@@ -51,20 +49,22 @@ namespace CUDA
       CUDA_CALL(generateParticles<<<nblocks, NTHREADS>>>(pos, vel, imass, n_particles,
                                                          imass_min, imass_diff, seed));
       CUDA_CALL(cudaDeviceSynchronize());
-      CUDA_CALL(cudaGraphicsUnmapResources(1, &resource));
+      CUDA_CALL(cudaGraphicsUnmapResources(1, &state.resource));
+      return state;
    }
 
-   void updateParticles(const size_t n_particles, const vec2 mouse_pos,
-                        const float dt, const float pull_strength,
-                        const float speed_mult, const float damp,
-                        const bool is_local_exp, const bool is_global_exp,
+   void updateParticles(State* state, const size_t n_particles,
+                        const vec2 mouse_pos, const float dt,
+                        const float pull_strength, const float speed_mult,
+                        const float damp, const bool is_local_exp,
+                        const bool is_global_exp,
                         const float local_exp_strength,
                         const float global_exp_strength)
    {
-      CUDA_CALL(cudaGraphicsMapResources(1, &resource));
+      CUDA_CALL(cudaGraphicsMapResources(1, &state->resource));
       void* d_buffer;
       size_t size;
-      CUDA_CALL(cudaGraphicsResourceGetMappedPointer(&d_buffer, &size, resource));
+      CUDA_CALL(cudaGraphicsResourceGetMappedPointer(&d_buffer, &size, state->resource));
       vec2* pos = reinterpret_cast<vec2*>(d_buffer);
       vec2* vel = reinterpret_cast<vec2*>(pos + n_particles);
       float* imass = reinterpret_cast<float*>(vel + n_particles);
@@ -76,12 +76,12 @@ namespace CUDA
                                                        local_exp_strength,
                                                        global_exp_strength));
       CUDA_CALL(cudaDeviceSynchronize());
-      CUDA_CALL(cudaGraphicsUnmapResources(1, &resource));
+      CUDA_CALL(cudaGraphicsUnmapResources(1, &state->resource));
    }
    
-   void cleanup()
+   void cleanup(State* state)
    {
-      CUDA_CALL(cudaGraphicsUnregisterResource(resource));
+      CUDA_CALL(cudaGraphicsUnregisterResource(state->resource));
       CUDA_CALL(cudaDeviceReset());
    }
 

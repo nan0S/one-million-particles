@@ -6,19 +6,15 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <GL/glew.h>
-#include <cuda_runtime.h>
 
 #include "Utils/Log.h"
 #include "Utils/Error.h"
 #include "Graphics/Shader.h"
 #include "Math.cuh"
 #include "UpdateCUDA.h"
+#include "UpdateCPU.h"
 
 /* macros */
-#define PI 3.14159265358f
-#define NTHREADS 1024
-#define NPERTHREAD 1024
-
 #define GET_REQUIRED_ARGUMENT(flag, name) \
    if (strcmp(flag, #name) == 0) \
    { \
@@ -37,6 +33,11 @@ protected:
    std::string do_grouping() const { return "\03"; }
 };
 
+enum class ComputeMode
+{
+   NONE, CUDA, CPU
+};
+
 /* forward declarations */
 void glfwErrorCallback(int code, const char* desc);
 void windowResizeHandler(GLFWwindow*, int width, int height);
@@ -48,6 +49,8 @@ const char* USAGE_STR =
 "Run particle simulation that follow mouse pointer.\n\n"
 "list of possible options:\n"
 "   --n_particles         number of particles\n"
+"   --cuda                run simulation using CUDA\n"
+"   --cpu                 run simulation using CPU\n"
 "   --seed                random seed\n"
 "   --pull_strength       pull force strength\n"
 "   --speed_mult          particle speed multiplier\n"
@@ -123,9 +126,12 @@ constexpr float MASS_MIN = 0.5f;
 constexpr float MASS_MAX = 7.0f;
 constexpr float DAMP_FACTOR = 0.995f;
 constexpr float DAMP_INTERVAL = 1.0f / 30;
-constexpr float LOCAL_EXP_STRENGTH = 1.5f;
-constexpr float GLOBAL_EXP_STRENGTH = 3.0f;
+constexpr float LOCAL_EXP_STRENGTH_MAX = 1.5f;
+constexpr float GLOBAL_EXP_STRENGTH_MAX = 3.0f;
+constexpr float EXP_LOADING_TIME = 2.0f;
 constexpr float COLOR_SPEED_CAP = 10.0f;
+
+constexpr ComputeMode COMPUTE_MODE = ComputeMode::CUDA;
 
 /* variables */
 int width, height;
@@ -149,9 +155,11 @@ int main(int argc, char* argv[])
    float mass_max = MASS_MAX;
    float damp_factor = DAMP_FACTOR;
    float damp_interval = DAMP_INTERVAL;
-   float local_exp_strength = LOCAL_EXP_STRENGTH;
-   float global_exp_strength = GLOBAL_EXP_STRENGTH;
+   float local_exp_strength_max = LOCAL_EXP_STRENGTH_MAX;
+   float global_exp_strength_max = GLOBAL_EXP_STRENGTH_MAX;
+   float exp_loading_time = EXP_LOADING_TIME;
    float color_speed_cap = COLOR_SPEED_CAP;
+   ComputeMode compute_mode = ComputeMode::NONE;
 
    /* Parse program arguments */
    int pivot_idx = 1;
@@ -180,9 +188,24 @@ int main(int argc, char* argv[])
       GET_REQUIRED_ARGUMENT(flag, mass_max);
       GET_REQUIRED_ARGUMENT(flag, damp_factor);
       GET_REQUIRED_ARGUMENT(flag, damp_interval);
-      GET_REQUIRED_ARGUMENT(flag, local_exp_strength);
-      GET_REQUIRED_ARGUMENT(flag, global_exp_strength);
+      GET_REQUIRED_ARGUMENT(flag, local_exp_strength_max);
+      GET_REQUIRED_ARGUMENT(flag, global_exp_strength_max);
+      GET_REQUIRED_ARGUMENT(flag, exp_loading_time);
       GET_REQUIRED_ARGUMENT(flag, color_speed_cap);
+      if (strcmp(flag, "cuda") == 0)
+      {
+         if (compute_mode != ComputeMode::NONE)
+            ERROR("Specified more than one compute mode.");
+         compute_mode = ComputeMode::CUDA;
+         continue;
+      }
+      if (strcmp(flag, "cpu") == 0)
+      {
+         if (compute_mode != ComputeMode::NONE)
+            ERROR("Specified more than one compute mode.");
+         compute_mode = ComputeMode::CPU;
+         continue;
+      }
       if (strcmp(flag, "help") == 0)
       {
          print(USAGE_STR);
@@ -191,6 +214,8 @@ int main(int argc, char* argv[])
       else
          ERROR("Flag '", arg, "' is no recognized.");
    }
+   if (compute_mode == ComputeMode::NONE)
+      compute_mode = COMPUTE_MODE;
 
    /* Setup GLFW and GLEW. */
    glfwSetErrorCallback(glfwErrorCallback);
@@ -259,30 +284,71 @@ int main(int argc, char* argv[])
       GL_CALL(glUniform1f(imax_speed_loc, 1.0f / COLOR_SPEED_CAP));
    }
 
-   CUDA::init(vbo, n_particles, mass_min, mass_max, seed);
-
+   /* Initialize simulation state. */
+   CUDA::State cuda_state;
+   CPU::State cpu_state;
+   switch (compute_mode)
+   {
+      case ComputeMode::CUDA:
+         print("CUDA mode selected.");
+         cuda_state = CUDA::init(vbo, n_particles, mass_min, mass_max, seed);
+         break;
+      case ComputeMode::CPU:
+         print("CPU mode selected.");
+         cpu_state = CPU::init(vbo, n_particles, mass_min, mass_max, seed);
+         break;
+      default:
+         assert(false);
+   }
    print("Running simulation for ", n_particles, " particles.");
 
    int frames_drawn = 0;
    float last_loop_time = glfwGetTime();
    float last_fps_time = last_loop_time;
    float last_damp_time = last_loop_time;
-   int last_click1_state = GLFW_RELEASE;
-   int last_click2_state = GLFW_RELEASE;
+   int last_left_button_state = GLFW_RELEASE;
+   int last_right_button_state = GLFW_RELEASE;
+   float left_click_time;
+   float right_click_time;
    
    while (!glfwWindowShouldClose(window))
    {
       GL_CALL(glClear(GL_COLOR_BUFFER_BIT));
 
       /* Handle input. */
-      bool is_local_exp, is_global_exp;
+      bool is_local_exp = false, is_global_exp = false;
+      float local_exp_strength, global_exp_strength;
       {
-         int click1_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1);
-         is_local_exp = click1_state == GLFW_PRESS && last_click1_state == GLFW_RELEASE;
-         last_click1_state = click1_state;
-         int click2_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2);
-         is_global_exp = click2_state == GLFW_PRESS && last_click2_state == GLFW_RELEASE;
-         last_click2_state = click2_state;
+         int left_button_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT);
+         if (left_button_state != last_left_button_state)
+         {
+            float now = glfwGetTime();
+            if (left_button_state == GLFW_PRESS)
+               left_click_time = now;
+            else
+            {
+               is_local_exp = true;
+               float passed = now - left_click_time;
+               float t = std::min(passed, exp_loading_time) / exp_loading_time;
+               local_exp_strength = t * local_exp_strength_max;
+            }
+         }
+         last_left_button_state = left_button_state;
+         int right_button_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT);
+         if (right_button_state != last_right_button_state)
+         {
+            float now = glfwGetTime();
+            if (right_button_state == GLFW_PRESS)
+               right_click_time = now;
+            else
+            {
+               is_global_exp = true;
+               float passed = now - right_click_time;
+               float t = std::min(passed, exp_loading_time) / exp_loading_time;
+               global_exp_strength = t * global_exp_strength_max;
+            }
+         }
+         last_right_button_state = right_button_state;
       }
 
       /* Calculate current mouse position. */
@@ -316,9 +382,23 @@ int main(int argc, char* argv[])
             damp = 1.0f;
       }
 
-      CUDA::updateParticles(n_particles, mouse_pos, dt, pull_strength,
-                            speed_mult, damp, is_local_exp, is_global_exp,
-                            local_exp_strength, global_exp_strength);
+      switch (compute_mode)
+      {
+         case ComputeMode::CUDA:
+            CUDA::updateParticles(&cuda_state, n_particles, mouse_pos, dt,
+                                  pull_strength, speed_mult, damp, is_local_exp,
+                                  is_global_exp, local_exp_strength,
+                                  global_exp_strength);
+            break;
+         case ComputeMode::CPU:
+            CPU::updateParticles(&cpu_state, vbo, n_particles, mouse_pos, dt,
+                                 pull_strength, speed_mult, damp, is_local_exp,
+                                 is_global_exp, local_exp_strength,
+                                 global_exp_strength);
+            break;
+         default:
+            assert(false);
+      }
 
       /* Draw. */
       GL_CALL(glDrawArrays(GL_POINTS, 0, n_particles));
@@ -339,6 +419,18 @@ int main(int argc, char* argv[])
             last_fps_time = now;
          }
       }
+   }
+
+   switch (compute_mode)
+   {
+      case ComputeMode::CUDA:
+         CUDA::cleanup(&cuda_state);
+         break;
+      case ComputeMode::CPU:
+         CPU::cleanup(&cpu_state);
+         break;
+      default:
+         assert(false);
    }
 
    GL_CALL(glDeleteBuffers(1, &vbo));
