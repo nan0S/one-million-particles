@@ -10,7 +10,8 @@ namespace CUDA
    /* macros */
    #define PI 3.14159265358f
    #define NTHREADS 1024
-   #define NPERTHREAD 1024
+   #define NPERTHREAD_INIT 1024
+   #define NPERTHREAD_UPDATE 12
    
    /* forward declarations */
    inline size_t iceil(size_t x, size_t d) { return (x + d - 1) / d; }
@@ -42,7 +43,7 @@ namespace CUDA
       vec2* pos = reinterpret_cast<vec2*>(d_buffer);
       vec2* vel = reinterpret_cast<vec2*>(pos + n_particles);
       float* imass = reinterpret_cast<float*>(vel + n_particles);
-      size_t spawn_total = iceil(n_particles, NPERTHREAD);
+      size_t spawn_total = iceil(n_particles, NPERTHREAD_INIT);
       size_t nblocks = iceil(spawn_total, NTHREADS);
       float imass_min = 1.0f / mass_max, imass_max = 1.0f / mass_min;
       float imass_diff = imass_max - imass_min;
@@ -68,7 +69,8 @@ namespace CUDA
       vec2* pos = reinterpret_cast<vec2*>(d_buffer);
       vec2* vel = reinterpret_cast<vec2*>(pos + n_particles);
       float* imass = reinterpret_cast<float*>(vel + n_particles);
-      size_t nblocks = iceil(n_particles, NTHREADS);
+      size_t spawn_total = iceil(n_particles, NPERTHREAD_UPDATE);
+      size_t nblocks = iceil(spawn_total, NTHREADS);
       CUDA_CALL(updateParticles<<<nblocks, NTHREADS>>>(pos, vel, imass,
                                                        n_particles, mouse_pos, dt,
                                                        pull_strength, speed_mult,
@@ -90,10 +92,10 @@ namespace CUDA
                           const float imass_min, const float imass_diff,
                           const unsigned long long seed)
    {
-      size_t idx = threadIdx.x + NPERTHREAD * blockIdx.x * blockDim.x;
+      size_t idx = threadIdx.x + NPERTHREAD_INIT * blockIdx.x * blockDim.x;
       curandState state;
       curand_init(seed, idx, 0, &state);
-      for (int i = 0; i < NPERTHREAD && idx < N; ++i)
+      for (int i = 0; i < NPERTHREAD_INIT && idx < N; ++i)
       {
          pos[idx] = getRandomUnitVector(&state);
          vel[idx] = getRandomUnitVector(&state);
@@ -118,28 +120,35 @@ namespace CUDA
                         const float local_exp_strength,
                         const float global_exp_strength)
    {
-      size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
-      if (idx >= N)
-         return;
+      size_t idx = threadIdx.x + NPERTHREAD_UPDATE * blockIdx.x * blockDim.x;
+      for (int i = 0; i < NPERTHREAD_UPDATE && idx < N; ++i)
+      {
+         vec2 p = pos[idx];
+         vec2 v = vel[idx];
+         float im = imass[idx];
 
-      vec2 p = pos[idx];
-      vec2 v = vel[idx];
-      float im = imass[idx];
+         /* Apply force to velocity. */
+         {
+            vec2 f = mouse_pos - p;
+            float f_mult = im * pull_strength * dt;
+            v += f_mult * f;
+            if (is_local_exp)
+               v -= (im * local_exp_strength / magnitude(f)) * f;
+            if (is_global_exp)
+               v -= (im * global_exp_strength / length(f)) * f;
+            v *= damp;
+         }
+         /* Apply velocity to position. */
+         {
+            float v_mult = speed_mult * dt;
+            p += v_mult * v;
+         }
 
-      vec2 f = mouse_pos - p;
-      float f_mult = im * pull_strength * dt;
-      v += f_mult * f;
-      if (is_local_exp)
-         v -= (im * local_exp_strength / magnitude(f)) * f;
-      if (is_global_exp)
-         v -= (im * global_exp_strength / length(f)) * f;
-      v *= damp;
-      
-      float v_mult = speed_mult * dt;
-      p += v_mult * v;
+         pos[idx] = p;
+         vel[idx] = v;
 
-      pos[idx] = p;
-      vel[idx] = v;
+         idx += blockDim.x;
+      }
    }
 
 } // namespace CUDA
