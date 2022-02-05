@@ -59,15 +59,29 @@ R"(
 
 layout (location = 0) in vec2 v_Pos;
 layout (location = 1) in vec2 v_Vel;
-layout (location = 2) in float v_Imass;
 
 out vec4 v_Color;
 
+uniform float max_speed;
+
 void main()
 {
-   v_Color = vec4(1, 0, 0, 1);
    gl_Position = vec4(v_Pos, 0, 1);
-   // gl_PointSize = 1 / v_Imass / 5;
+   float speed = length(v_Vel);
+   float hue;
+   if (speed >= max_speed)
+      hue = 0;
+   else
+      hue = (max_speed - speed) / max_speed * 240;
+   float val = hue / 60;
+   if (hue < 60)
+      v_Color = vec4(1, val, 0, 1);
+   else if (hue < 120)
+      v_Color = vec4(2 - val, 1, 0, 1);
+   else if (hue < 180)
+      v_Color = vec4(0, 1, val - 2, 1);
+   else
+      v_Color = vec4(0, 4 - val, 1, 1);
 }
 )";
 
@@ -99,6 +113,7 @@ constexpr float DAMP_FACTOR = 0.995f;
 constexpr float DAMP_INTERVAL = 1.0f / 30;
 constexpr float CLICK1_STRENGTH = 1.5f;
 constexpr float CLICK2_STRENGTH = 3.0f;
+constexpr float MAX_SPEED = 10.0f;
 
 /* variables */
 int width, height;
@@ -209,14 +224,14 @@ int main(int argc, char* argv[])
    GL_CALL(glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
                                 sizeof(vec2),
                                 reinterpret_cast<const void*>(n_particles * sizeof(vec2))));
-   GL_CALL(glEnableVertexAttribArray(2));
-   GL_CALL(glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE,
-                                sizeof(float),
-                                reinterpret_cast<const void*>(2 * n_particles * sizeof(vec2))));
 
    GLuint shader = Graphics::compileShader(VERTEX_SHADER_SOURCE,
                                            FRAGMENT_SHADER_SOURCE);
    GL_CALL(glUseProgram(shader));
+   {
+      GL_CALL(GLint max_speed_loc = glGetUniformLocation(shader, "max_speed"));
+      GL_CALL(glUniform1f(max_speed_loc, MAX_SPEED));
+   }
 
    /* Setup CUDA. */
    cudaGraphicsResource_t resource;
@@ -227,7 +242,6 @@ int main(int argc, char* argv[])
    auto iceil = [](size_t x, size_t d) { return (x + d - 1) / d; };
    {
       CUDA_CALL(cudaGraphicsMapResources(1, &resource));
-
       void* d_buffer;
       size_t size;
       CUDA_CALL(cudaGraphicsResourceGetMappedPointer(&d_buffer, &size, resource));
@@ -243,16 +257,15 @@ int main(int argc, char* argv[])
       CUDA_CALL(generateParticles<<<nblocks, NTHREADS>>>(pos, vel, imass, n_particles,
                                                          imass_min, imass_diff, SEED));
       CUDA_CALL(cudaDeviceSynchronize());
-
       CUDA_CALL(cudaGraphicsUnmapResources(1, &resource));
    }
 
    print("Running simulation for ", n_particles, " particles.");
 
    int frames_drawn = 0;
-   float last_time = glfwGetTime();
-   float last_fps_time = last_time;
-   float last_damp_time = last_time;
+   float last_loop_time = glfwGetTime();
+   float last_fps_time = last_loop_time;
+   float last_damp_time = last_loop_time;
    int last_click1_state = GLFW_RELEASE;
    int last_click2_state = GLFW_RELEASE;
    
@@ -271,7 +284,7 @@ int main(int argc, char* argv[])
          last_click2_state = click2_state;
       }
 
-      /* Get current mouse position. */
+      /* Calculate current mouse position. */
       vec2 mpos;
       {
          double x, y;
@@ -284,8 +297,8 @@ int main(int argc, char* argv[])
       float dt;
       {
          float now = glfwGetTime();
-         dt = now - last_time;
-         last_time = now;
+         dt = now - last_loop_time;
+         last_loop_time = now;
       }
 
       /* Calculate damp. */
