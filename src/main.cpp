@@ -25,7 +25,7 @@
       continue; \
    }
 
-/* structs */
+/* structs, enums */
 struct comma_numpunct : public std::numpunct<char>
 {
 protected:
@@ -38,32 +38,50 @@ enum class ComputeMode
    NONE, CUDA, CPU
 };
 
+struct ButtonState
+{
+   int last_action;
+   float last_click_time;
+};
+
 /* forward declarations */
-void glfwErrorCallback(int code, const char* desc);
-void windowResizeHandler(GLFWwindow*, int width, int height);
-void windowKeyInputHandler(GLFWwindow* window, int key, int, int action, int);
+static void glfwErrorCallback(int code, const char* desc);
+static void windowResizeCallback(GLFWwindow*, int width, int height);
+static void keyInputCallback(GLFWwindow* window, int key, int, int action, int);
+static void mouseInputCallback(GLFWwindow*, int button, int action, int);
+static void updateButtonState(ButtonState* state, int action, bool* is_click_finished,
+                              float* click_strength, const float click_strength_max);
+static void scrollCallback(GLFWwindow*, double, double yoff);
 
 /* constants */
 const char* USAGE_STR =
 "Usage: ./OneMillionParticles [OPTION]...\n\n"
 "Run particle simulation that follow mouse pointer.\n\n"
 "list of possible options:\n"
-"   --n_particles         number of particles\n"
-"   --cuda                run simulation using CUDA\n"
-"   --cpu                 run simulation using CPU\n"
-"   --seed                random seed\n"
-"   --pull_strength       pull force strength\n"
-"   --speed_mult          particle speed multiplier\n"
-"   --mass_min            minimum particle mass\n"
-"   --mass_max            maximum particle mass\n"
-"   --damp_factor         particle's velocity damp factor\n"
-"   --damp_interval       particle's velocity damp interval\n"
-"   --local_exp_strength  local explosion (mouse1) punch/strength\n"
-"   --global_exp_strength global explosion (mouse2) punch/strength\n"
-"   --color_speed_cap     speed threshold for the 'fastest' color\n"
-"   --help                print this help";
+"   --n_particles             number of particles\n"
+"   --cuda                    run simulation using CUDA\n"
+"   --cpu                     run simulation using CPU\n"
+"   --seed                    random seed\n"
+"   --pull_strength           pull force strength\n"
+"   --speed_mult              particle speed multiplier\n"
+"   --mass_min                minimum particle mass\n"
+"   --mass_max                maximum particle mass\n"
+"   --damp_factor             particle's velocity damp factor\n"
+"   --damp_interval           particle's velocity damp interval\n"
+"   --damp_factor_sensitivity damp factor adjustment sensitivity\n"
+"   --local_exp_strength      local explosion (mouse1) punch/strength\n"
+"   --global_exp_strength     global explosion (mouse2) punch/strength\n"
+"   --click_loading_time      time for the explosion to fully load\n"
+"   --color_speed_cap         speed threshold for the 'fastest' color\n"
+"   --help                    print this help";
 
-const char* VERTEX_SHADER_SOURCE =
+static const char* INSTRUCTION_STR =
+"Move your mouse cursor to change particles' point of attraction.\n"
+"Hold and release left/right mouse button to spawn local/global explosion. The longer you hold, the stronger the explosion.\n"
+"Use mouse scollback to control damp factor.\n"
+"Press ESCAPE/Q to quit.\n";
+
+static const char* VERTEX_SHADER_SOURCE =
 R"(
 #version 330 core
 
@@ -100,7 +118,7 @@ void main()
 }
 )";
 
-const char* FRAGMENT_SHADER_SOURCE =
+static const char* FRAGMENT_SHADER_SOURCE =
 R"(
 #version 330 core
 
@@ -113,28 +131,35 @@ void main()
 }
 )";
 
-constexpr int WINDOW_WIDTH = 1280;
-constexpr int WINDOW_HEIGHT = 720;
+static constexpr int WINDOW_WIDTH = 1280;
+static constexpr int WINDOW_HEIGHT = 720;
 
-constexpr float TIME_BETWEEN_FPS_REPORT = 0.2f;
+static constexpr float TIME_BETWEEN_FPS_REPORT = 2.0f;
 
-constexpr size_t N_PARTICLES = 1'000'000;
-constexpr unsigned long long SEED = 1234ull;
-constexpr float PULL_STRENGTH = 5.f;
-constexpr float SPEED_MULT = 1.f;
-constexpr float MASS_MIN = 0.5f;
-constexpr float MASS_MAX = 7.0f;
-constexpr float DAMP_FACTOR = 0.995f;
-constexpr float DAMP_INTERVAL = 1.0f / 30;
-constexpr float LOCAL_EXP_STRENGTH_MAX = 10.0f;
-constexpr float GLOBAL_EXP_STRENGTH_MAX = 20.0f;
-constexpr float EXP_LOADING_TIME = 2.0f;
-constexpr float COLOR_SPEED_CAP = 10.0f;
+static constexpr size_t N_PARTICLES = 1'000'000;
+static constexpr unsigned long long SEED = 1234ull;
+static constexpr float PULL_STRENGTH = 5.f;
+static constexpr float SPEED_MULT = 1.f;
+static constexpr float MASS_MIN = 0.5f;
+static constexpr float MASS_MAX = 7.0f;
+static constexpr float DAMP_FACTOR = 0.995f;
+static constexpr float DAMP_INTERVAL = 1.0f / 30;
+static constexpr float DAMP_SENSITIVITY = 0.005f;
+static constexpr float LOCAL_EXP_STRENGTH_MAX = 10.0f;
+static constexpr float GLOBAL_EXP_STRENGTH_MAX = 20.0f;
+static constexpr float CLICK_LOADING_TIME = 2.0f;
+static constexpr float COLOR_SPEED_CAP = 10.0f;
 
-constexpr ComputeMode COMPUTE_MODE = ComputeMode::CUDA;
+static constexpr ComputeMode COMPUTE_MODE = ComputeMode::CUDA;
 
 /* variables */
-int width, height;
+static int width, height;
+static float damp_factor;
+static float damp_factor_sensitivity;
+static float local_exp_strength_max, global_exp_strength_max;
+static float click_loading_time;
+static bool is_local_exp, is_global_exp;
+static float local_exp_strength, global_exp_strength;
 
 int main(int argc, char* argv[])
 {
@@ -153,11 +178,12 @@ int main(int argc, char* argv[])
    float speed_mult = SPEED_MULT;
    float mass_min = MASS_MIN;
    float mass_max = MASS_MAX;
-   float damp_factor = DAMP_FACTOR;
+   damp_factor = DAMP_FACTOR;
    float damp_interval = DAMP_INTERVAL;
-   float local_exp_strength_max = LOCAL_EXP_STRENGTH_MAX;
-   float global_exp_strength_max = GLOBAL_EXP_STRENGTH_MAX;
-   float exp_loading_time = EXP_LOADING_TIME;
+   damp_factor_sensitivity = DAMP_SENSITIVITY;
+   local_exp_strength_max = LOCAL_EXP_STRENGTH_MAX;
+   global_exp_strength_max = GLOBAL_EXP_STRENGTH_MAX;
+   click_loading_time = CLICK_LOADING_TIME;
    float color_speed_cap = COLOR_SPEED_CAP;
    ComputeMode compute_mode = ComputeMode::NONE;
 
@@ -190,7 +216,7 @@ int main(int argc, char* argv[])
       GET_REQUIRED_ARGUMENT(flag, damp_interval);
       GET_REQUIRED_ARGUMENT(flag, local_exp_strength_max);
       GET_REQUIRED_ARGUMENT(flag, global_exp_strength_max);
-      GET_REQUIRED_ARGUMENT(flag, exp_loading_time);
+      GET_REQUIRED_ARGUMENT(flag, click_loading_time);
       GET_REQUIRED_ARGUMENT(flag, color_speed_cap);
       if (strcmp(flag, "cuda") == 0)
       {
@@ -236,9 +262,11 @@ int main(int argc, char* argv[])
    }
 
    glfwMakeContextCurrent(window);
-   windowResizeHandler(window, WINDOW_WIDTH, WINDOW_HEIGHT);
-   glfwSetFramebufferSizeCallback(window, windowResizeHandler);
-   glfwSetKeyCallback(window, windowKeyInputHandler);
+   windowResizeCallback(window, WINDOW_WIDTH, WINDOW_HEIGHT);
+   glfwSetFramebufferSizeCallback(window, windowResizeCallback);
+   glfwSetKeyCallback(window, keyInputCallback);
+   glfwSetMouseButtonCallback(window, mouseInputCallback);
+   glfwSetScrollCallback(window, scrollCallback);
    glfwSwapInterval(0);
 
    if (glewInit() != GLEW_OK)
@@ -281,6 +309,7 @@ int main(int argc, char* argv[])
    }
 
    /* Initialize simulation. */
+   print(INSTRUCTION_STR);
    switch (compute_mode)
    {
       case ComputeMode::CUDA:
@@ -300,50 +329,10 @@ int main(int argc, char* argv[])
    float last_loop_time = glfwGetTime();
    float last_fps_time = last_loop_time;
    float last_damp_time = last_loop_time;
-   int last_left_button_state = GLFW_RELEASE;
-   int last_right_button_state = GLFW_RELEASE;
-   float left_click_time;
-   float right_click_time;
    
    while (!glfwWindowShouldClose(window))
    {
       GL_CALL(glClear(GL_COLOR_BUFFER_BIT));
-
-      /* Handle input. */
-      bool is_local_exp = false, is_global_exp = false;
-      float local_exp_strength, global_exp_strength;
-      {
-         int left_button_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT);
-         if (left_button_state != last_left_button_state)
-         {
-            float now = glfwGetTime();
-            if (left_button_state == GLFW_PRESS)
-               left_click_time = now;
-            else
-            {
-               is_local_exp = true;
-               float passed = now - left_click_time;
-               float t = std::min(passed, exp_loading_time) / exp_loading_time;
-               local_exp_strength = t * local_exp_strength_max;
-            }
-         }
-         last_left_button_state = left_button_state;
-         int right_button_state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT);
-         if (right_button_state != last_right_button_state)
-         {
-            float now = glfwGetTime();
-            if (right_button_state == GLFW_PRESS)
-               right_click_time = now;
-            else
-            {
-               is_global_exp = true;
-               float passed = now - right_click_time;
-               float t = std::min(passed, exp_loading_time) / exp_loading_time;
-               global_exp_strength = t * global_exp_strength_max;
-            }
-         }
-         last_right_button_state = right_button_state;
-      }
 
       /* Calculate current mouse position. */
       vec2 mouse_pos;
@@ -394,6 +383,9 @@ int main(int argc, char* argv[])
             assert(false);
       }
 
+      is_local_exp = false;
+      is_global_exp = false;
+
       /* Draw. */
       GL_CALL(glDrawArrays(GL_POINTS, 0, n_particles));
       glfwSwapBuffers(window);
@@ -439,20 +431,68 @@ void glfwErrorCallback(int code, const char* desc)
    ERROR("[GLFW Error] '", desc, "' (", code, ")");
 }
 
-void windowResizeHandler(GLFWwindow* window, int w, int h)
+void windowResizeCallback(GLFWwindow* window, int w, int h)
 {
    width = w; height = h;
    GL_CALL(glViewport(0, 0, width, height));
 }
 
-void windowKeyInputHandler(GLFWwindow* window, int key, int, int action, int)
+void keyInputCallback(GLFWwindow* window, int key, int, int action, int)
 {
    switch (key)
    {
       case GLFW_KEY_ESCAPE:
       case GLFW_KEY_Q:
-         glfwSetWindowShouldClose(window, GL_TRUE);
+         if (action == GLFW_PRESS)
+            glfwSetWindowShouldClose(window, GL_TRUE);
          break;
    }
+}
+
+void mouseInputCallback(GLFWwindow*, int button, int action, int)
+{
+   static ButtonState left_button_state = { GLFW_RELEASE };
+   static ButtonState right_button_state = { GLFW_RELEASE };
+   switch (button)
+   {
+      case GLFW_MOUSE_BUTTON_LEFT:
+         updateButtonState(&left_button_state, action, &is_local_exp,
+                           &local_exp_strength, local_exp_strength_max);
+         break;
+      case GLFW_MOUSE_BUTTON_RIGHT:
+         updateButtonState(&right_button_state, action, &is_global_exp,
+                           &global_exp_strength, global_exp_strength_max);
+         break;
+   }
+}
+
+void updateButtonState(ButtonState* state, int action, bool* is_click_finished,
+                       float* click_strength, const float click_strength_max)
+{
+   if (action != state->last_action)
+   {
+      float now = glfwGetTime();
+      switch (action)
+      {
+         case GLFW_PRESS:
+            state->last_click_time = now;
+            break;
+         case GLFW_RELEASE:
+            float elapsed = now - state->last_click_time;
+            float t = std::min(elapsed, click_loading_time) / click_loading_time;
+            *click_strength = t * click_strength_max;
+            *is_click_finished = true;
+            break;
+      }
+      state->last_action = action;
+   }
+}
+
+void scrollCallback(GLFWwindow*, double, double yoff)
+{
+   damp_factor += yoff * damp_factor_sensitivity;
+   if (damp_factor > 1) damp_factor = 1;
+   else if (damp_factor < 0) damp_factor = 0;
+   print("damp_factor=", std::setprecision(3), damp_factor, std::setprecision(2));
 }
 
