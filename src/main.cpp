@@ -126,8 +126,8 @@ constexpr float MASS_MIN = 0.5f;
 constexpr float MASS_MAX = 7.0f;
 constexpr float DAMP_FACTOR = 0.995f;
 constexpr float DAMP_INTERVAL = 1.0f / 30;
-constexpr float LOCAL_EXP_STRENGTH_MAX = 5.0f;
-constexpr float GLOBAL_EXP_STRENGTH_MAX = 10.0f;
+constexpr float LOCAL_EXP_STRENGTH_MAX = 10.0f;
+constexpr float GLOBAL_EXP_STRENGTH_MAX = 20.0f;
 constexpr float EXP_LOADING_TIME = 2.0f;
 constexpr float COLOR_SPEED_CAP = 10.0f;
 
@@ -255,13 +255,9 @@ int main(int argc, char* argv[])
    GL_CALL(glGenVertexArrays(1, &vao));
    GL_CALL(glBindVertexArray(vao));
    
-   size_t total_memory = n_particles * (2 * sizeof(vec2) + sizeof(float));
    GLuint vbo;
    GL_CALL(glGenBuffers(1, &vbo));
    GL_CALL(glBindBuffer(GL_ARRAY_BUFFER, vbo));
-   GL_CALL(glBufferData(GL_ARRAY_BUFFER,
-                       total_memory,
-                       NULL, GL_DYNAMIC_DRAW));
    GL_CALL(glEnableVertexAttribArray(0));
    GL_CALL(glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
                                 sizeof(vec2), 0));
@@ -284,18 +280,16 @@ int main(int argc, char* argv[])
       GL_CALL(glUniform1f(imax_speed_loc, 1.0f / COLOR_SPEED_CAP));
    }
 
-   /* Initialize simulation state. */
-   CUDA::State cuda_state;
-   CPU::State cpu_state;
+   /* Initialize simulation. */
    switch (compute_mode)
    {
       case ComputeMode::CUDA:
          print("CUDA mode selected.");
-         cuda_state = CUDA::init(vbo, n_particles, mass_min, mass_max, seed);
+         CUDA::init(vbo, n_particles, mass_min, mass_max, seed);
          break;
       case ComputeMode::CPU:
          print("CPU mode selected.");
-         cpu_state = CPU::init(vbo, n_particles, mass_min, mass_max, seed);
+         CPU::init(n_particles, mass_min, mass_max, seed);
          break;
       default:
          assert(false);
@@ -382,19 +376,19 @@ int main(int argc, char* argv[])
             damp = 1.0f;
       }
 
+      /* Update particles. */
       switch (compute_mode)
       {
          case ComputeMode::CUDA:
-            CUDA::updateParticles(&cuda_state, n_particles, mouse_pos, dt,
-                                  pull_strength, speed_mult, damp, is_local_exp,
+            CUDA::updateParticles(n_particles, mouse_pos, dt, pull_strength,
+                                  speed_mult, damp, is_local_exp,
                                   is_global_exp, local_exp_strength,
                                   global_exp_strength);
             break;
          case ComputeMode::CPU:
-            CPU::updateParticles(&cpu_state, vbo, n_particles, mouse_pos, dt,
-                                 pull_strength, speed_mult, damp, is_local_exp,
-                                 is_global_exp, local_exp_strength,
-                                 global_exp_strength);
+            CPU::updateParticles(n_particles, mouse_pos, dt, pull_strength,
+                                 speed_mult, damp, is_local_exp, is_global_exp,
+                                 local_exp_strength, global_exp_strength);
             break;
          default:
             assert(false);
@@ -424,15 +418,15 @@ int main(int argc, char* argv[])
    switch (compute_mode)
    {
       case ComputeMode::CUDA:
-         CUDA::cleanup(&cuda_state);
+         CUDA::cleanup();
          break;
       case ComputeMode::CPU:
-         CPU::cleanup(&cpu_state);
          break;
       default:
          assert(false);
    }
 
+   GL_CALL(glDeleteProgram(shader));
    GL_CALL(glDeleteBuffers(1, &vbo));
    GL_CALL(glDeleteVertexArrays(1, &vao));
    glfwTerminate();
