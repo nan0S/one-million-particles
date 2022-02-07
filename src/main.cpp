@@ -161,7 +161,7 @@ int main(int argc, char* argv[])
    float color_speed_cap = COLOR_SPEED_CAP;
    ComputeMode compute_mode = ComputeMode::NONE;
 
-   /* Parse program arguments */
+   /* Parse program arguments. */
    int pivot_idx = 1;
    for (int i = 1; i < argc; ++i)
    {
