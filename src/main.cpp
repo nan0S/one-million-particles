@@ -13,6 +13,7 @@
 #include "Math.cuh"
 #include "UpdateCUDA.h"
 #include "UpdateCPU.h"
+#include "UpdateCompute.h"
 
 /* macros */
 #define GET_REQUIRED_ARGUMENT(flag, name) \
@@ -35,7 +36,7 @@ protected:
 
 enum class ComputeMode
 {
-   NONE, CUDA, CPU
+   NONE, CUDA, CPU, COMPUTE
 };
 
 struct ButtonState
@@ -61,6 +62,7 @@ const char* USAGE_STR =
 "   --n_particles             number of particles\n"
 "   --cuda                    run simulation using CUDA\n"
 "   --cpu                     run simulation using CPU\n"
+"   --compute                 run simulation using Compute Shader\n"
 "   --seed                    random seed\n"
 "   --pull_strength           pull force strength\n"
 "   --speed_mult              particle speed multiplier\n"
@@ -232,6 +234,13 @@ int main(int argc, char* argv[])
          compute_mode = ComputeMode::CPU;
          continue;
       }
+      if (strcmp(flag, "compute") == 0)
+      {
+         if (compute_mode != ComputeMode::NONE)
+            ERROR("Specified more than one compute mode.");
+         compute_mode = ComputeMode::COMPUTE;
+         continue;
+      }
       if (strcmp(flag, "help") == 0)
       {
          print(USAGE_STR);
@@ -298,8 +307,8 @@ int main(int argc, char* argv[])
                                 sizeof(float),
                                 reinterpret_cast<const void*>(2 * n_particles * sizeof(vec2))));
 
-   GLuint shader = Graphics::compileShader(VERTEX_SHADER_SOURCE,
-                                           FRAGMENT_SHADER_SOURCE);
+   GLuint shader = Graphics::createGraphicsShader(VERTEX_SHADER_SOURCE,
+                                                  FRAGMENT_SHADER_SOURCE);
    GL_CALL(glUseProgram(shader));
    {
       GL_CALL(GLint max_speed_loc = glGetUniformLocation(shader, "max_speed"));
@@ -319,6 +328,10 @@ int main(int argc, char* argv[])
       case ComputeMode::CPU:
          print("CPU mode selected.");
          CPU::init(n_particles, mass_min, mass_max, seed);
+         break;
+      case ComputeMode::COMPUTE:
+         print("COMPUTE mode selected.");
+         Compute::init(vbo, n_particles, mass_min, mass_max, seed);
          break;
       default:
          assert(false);
@@ -379,6 +392,12 @@ int main(int argc, char* argv[])
                                  speed_mult, damp, is_local_exp, is_global_exp,
                                  local_exp_strength, global_exp_strength);
             break;
+         case ComputeMode::COMPUTE:
+            Compute::updateParticles(shader, vbo, n_particles, mouse_pos,
+                                 dt, pull_strength,
+                                 speed_mult, damp, is_local_exp, is_global_exp,
+                                 local_exp_strength, global_exp_strength);
+            break;
          default:
             assert(false);
       }
@@ -413,6 +432,9 @@ int main(int argc, char* argv[])
          CUDA::cleanup();
          break;
       case ComputeMode::CPU:
+         break;
+      case ComputeMode::COMPUTE:
+         Compute::cleanup();
          break;
       default:
          assert(false);

@@ -4,5 +4,7 @@
 
 namespace Graphics
 {
-   GLuint compileShader(const char* vertex_source, const char* fragment_source);
+   GLuint createGraphicsShader(const char* vertex_source,
+                               const char* fragment_source);
+   GLuint createComputeShader(const char* compute_source);
 }

@@ -10,7 +10,6 @@
 namespace CPU
 {
    /* macros */
-   #define PI 3.14159265358f
    #define NTHREADS 8
    
    /* structs */

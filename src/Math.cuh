@@ -5,6 +5,8 @@
 
 #include <cuda_runtime.h>
 
+#define PI 3.14159265358f
+
 struct vec2
 {
    float x;

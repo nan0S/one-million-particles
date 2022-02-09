@@ -10,7 +10,6 @@
 namespace CUDA
 {
    /* macros */
-   #define PI 3.14159265358f
    #define NTHREADS 1024
    #define NPERTHREAD_INIT 1024
    #define NPERTHREAD_UPDATE 12
@@ -78,7 +77,6 @@ namespace CUDA
          CUDA_CALL(generateParticles<<<nblocks, NTHREADS>>>(state.mem, n_particles,
                                                             imass_min, imass_diff,
                                                             seed));
-         CUDA_CALL(cudaDeviceSynchronize());
       }
       CUDA_CALL(cudaGraphicsUnmapResources(1, &state.resource));
    }
@@ -103,7 +101,6 @@ namespace CUDA
                                                        damp, is_local_exp, is_global_exp,
                                                        local_exp_strength,
                                                        global_exp_strength));
-      CUDA_CALL(cudaDeviceSynchronize());
       CUDA_CALL(cudaGraphicsUnmapResources(1, &state.resource));
 #ifdef MEASURE_TIME
       timer.stop();
