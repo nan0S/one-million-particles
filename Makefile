@@ -8,11 +8,11 @@ LIB       := -L$(CUDA_HOME)/lib64 -lcudart -lcurand -lGLEW -lGL -lglfw -lGLU -pt
 
 VERSION   := -std=c++17
 CXXFLAGS  := $(VERSION) -Wall -pedantic
-# CXXFLAGS  += -DNDEBUG -O3 -Wno-unused-variable -Wno-maybe-uninitialized #-DMEASURE_TIME
-CXXFLAGS  += -ggdb -fno-omit-frame-pointer -O0 -DMEASURE_TIME
+CXXFLAGS  += -DNDEBUG -O3 -Wno-unused-variable -Wno-maybe-uninitialized #-DMEASURE_TIME
+# CXXFLAGS  += -ggdb -fno-omit-frame-pointer -O0 -DMEASURE_TIME
 NVCCFLAGS := $(VERSION) -arch=sm_50 -Wno-deprecated-gpu-targets
-# NVCCFLAGS += --use_fast_math --ptxas-options=-O3 #-DMEASURE_TIME
-NVCCFLAGS += --ptxas-options=-O0 -DMEASURE_TIME
+NVCCFLAGS += --use_fast_math --ptxas-options=-O3 #-DMEASURE_TIME
+# NVCCFLAGS += --ptxas-options=-O0 -DMEASURE_TIME
 
 SRC := $(shell find $(SRC_DIR) -name '*.cpp')
 OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SRC))
