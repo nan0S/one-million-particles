@@ -121,16 +121,19 @@ namespace Compute
       /* Generate points. */
       {
          size_t buffer_size = getTotalBufferSize(sim_state.n_particles);
-         void* buffer = malloc(buffer_size);
-         // GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW));
-         // GL_CALL(void* buffer = glMapBuffer(GL_ARRAY_BUFFER, GL_READ_WRITE));
+         // void* buffer = malloc(buffer_size);
+         GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, NULL, GL_DYNAMIC_COPY));
+         GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT;
+         GL_CALL(void* buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, buffer_size, flags));
          SimMemory sim_mem = getMemoryFromBuffer(buffer, sim_state.n_particles);
          generateParticlesOnCPU(sim_config, &sim_mem);
-         GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, buffer, GL_DYNAMIC_DRAW));
-         free(buffer);
-         // GL_CALL(glUnmapBuffer(GL_ARRAY_BUFFER));
-         // TODO: commented code (which would work inplace of malloc code)
-         // makes the WHOLE program run slower (wtf)
+         // GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, buffer, GL_DYNAMIC_COPY));
+         // free(buffer);
+         GL_CALL(glUnmapBuffer(GL_ARRAY_BUFFER));
+         // TODO: changing GL_DYNAMIC_COPY to GL_DYNAMIC_DRAW has major
+         // performance implications for no apparent reason (on the other hand
+         // using malloc and not glMap could be used with GL_DYNAMIC_DRAW without
+         // performance costs)
       }
    }
 

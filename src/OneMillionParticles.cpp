@@ -180,13 +180,13 @@ int main(int argc, char* argv[])
    }
 
    /* Initialize simulation params with default values. */
-   SimConfig sim_config;
+   SimConfig sim_config = {};
    sim_config.n_particles = N_PARTICLES;
    sim_config.seed = SEED;
    sim_config.mass_min = MASS_MIN;
    sim_config.mass_max = MASS_MAX;
-   SimParams sim_params;
-   SimUpdate sim_update;
+   SimParams sim_params = {};
+   SimUpdate sim_update = {};
    resetParamsToDefault(&sim_params, &sim_update);
    ComputeMode compute_mode = ComputeMode::NONE;
 
