@@ -17,7 +17,7 @@ NVCCFLAGS += --use_fast_math --ptxas-options=-O3 #-DMEASURE_TIME
 SRC := $(shell find . -name '*.cpp')
 OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SRC))
 DEP := $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(SRC))
-SRC := $(shell find $(SRC_DIR) -name '*.cu')
+SRC := $(shell find . -name '*.cu')
 OBJ += $(patsubst %.cu,$(BUILD_DIR)/%.o,$(SRC))
 DEP += $(patsubst %.cu,$(BUILD_DIR)/%.d,$(SRC))
 
