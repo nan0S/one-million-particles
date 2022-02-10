@@ -3,8 +3,8 @@ TARGET    := OneMillionParticles
 SRC_DIR   := src
 BUILD_DIR := build
 
-INC       := -I$(CUDA_HOME)/include -I./$(SRC_DIR)
-LIB       := -L$(CUDA_HOME)/lib64 -lcudart -lcurand -lGLEW -lGL -lglfw -lGLU -pthread
+INC       := -I$(CUDA_HOME)/include -I./$(SRC_DIR) -I./deps
+LIB       := -L$(CUDA_HOME)/lib64 -lcudart -lcurand -lGLEW -lGL -lglfw -lGLU -pthread -ldl
 
 VERSION   := -std=c++17
 CXXFLAGS  := $(VERSION) -Wall -pedantic
@@ -14,7 +14,7 @@ NVCCFLAGS := $(VERSION) -arch=sm_50 -Wno-deprecated-gpu-targets
 NVCCFLAGS += --use_fast_math --ptxas-options=-O3 #-DMEASURE_TIME
 # NVCCFLAGS += --ptxas-options=-O0 -DMEASURE_TIME
 
-SRC := $(shell find $(SRC_DIR) -name '*.cpp')
+SRC := $(shell find . -name '*.cpp')
 OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SRC))
 DEP := $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(SRC))
 SRC := $(shell find $(SRC_DIR) -name '*.cu')

@@ -39,8 +39,7 @@ namespace CUDA
       sim_state.n_particles = sim_config->n_particles;
       /* Allocate buffer. */
       {
-         size_t buffer_size = sim_config->n_particles * (2 * sizeof(vec2) +
-                                                         sizeof(float));
+         size_t buffer_size = getTotalBufferSize(sim_state.n_particles);
          GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW));
          CUDA_CALL(cudaGraphicsGLRegisterBuffer(&sim_state.resource, vbo,
                                                 cudaGraphicsRegisterFlagsNone));
@@ -83,6 +82,7 @@ namespace CUDA
                                                        sim_state.mem, *sim_update));
       CUDA_CALL(cudaGraphicsUnmapResources(1, &sim_state.resource));
 #ifdef MEASURE_TIME
+      CUDA_CALL(cudaDeviceSynchronize());
       timer.stop();
 #endif
    }

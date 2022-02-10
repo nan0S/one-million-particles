@@ -122,9 +122,9 @@ namespace Compute
       {
          size_t buffer_size = getTotalBufferSize(sim_state.n_particles);
          void* buffer = malloc(buffer_size);
-         SimMemory sim_mem = getMemoryFromBuffer(buffer, sim_state.n_particles);
          // GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW));
          // GL_CALL(void* buffer = glMapBuffer(GL_ARRAY_BUFFER, GL_READ_WRITE));
+         SimMemory sim_mem = getMemoryFromBuffer(buffer, sim_state.n_particles);
          generateParticlesOnCPU(sim_config, &sim_mem);
          GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, buffer, GL_DYNAMIC_DRAW));
          free(buffer);

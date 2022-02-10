@@ -6,9 +6,13 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <GL/glew.h>
+#include <imgui/imgui.h>
+#include <imgui/imgui_impl_glfw.h>
+#include <imgui/imgui_impl_opengl3.h>
 
 #include "Utils/Log.h"
 #include "Utils/Error.h"
+#include "Utils/Timer.h"
 #include "Graphics/Shader.h"
 #include "Simulation.h"
 #include "UpdateCUDA.h"
@@ -45,14 +49,33 @@ struct ButtonState
    float last_click_time;
 };
 
+struct SimParams
+{
+   float damp;
+   float damp_interval;
+   float local_exp_strength_max;
+   float global_exp_strength_max;
+   float click_loading_time;
+   float color_speed_cap;
+};
+
+struct WindowContext
+{
+   int width;
+   int height;
+   SimParams* sim_params;
+   SimUpdate* sim_update;
+};
+
 /* forward declarations */
+static void resetParamsToDefault(SimParams* sim_params, SimUpdate* sim_update);
 static void glfwErrorCallback(int code, const char* desc);
 static void windowResizeCallback(GLFWwindow*, int width, int height);
 static void keyInputCallback(GLFWwindow* window, int key, int, int action, int);
 static void mouseInputCallback(GLFWwindow*, int button, int action, int);
 static void updateButtonState(ButtonState* state, int action, bool* is_click_finished,
-                              float* click_strength, const float click_strength_max);
-static void scrollCallback(GLFWwindow*, double, double yoff);
+                              float* click_strength, const float click_strength_max,
+                              const float click_loading_time);
 
 /* constants */
 const char* USAGE_STR =
@@ -64,15 +87,14 @@ const char* USAGE_STR =
 "   --cpu                     run simulation using CPU\n"
 "   --compute                 run simulation using Compute Shader\n"
 "   --seed                    random seed (= 1234)\n"
-"   --pull_strength           pull force strength (= 5.0)\n"
-"   --speed_mult              particle speed multiplier (= 1.0)\n"
 "   --mass_min                minimum particle mass (= 0.5)\n"
 "   --mass_max                maximum particle mass (= 7.0)\n"
+"   --pull_strength           pull force strength (= 5.0)\n"
+"   --speed_mult              particle speed multiplier (= 1.0)\n"
 "   --damp                    particle's velocity damp factor (= 0.995)\n"
 "   --damp_interval           particle's velocity damp interval (= 0.033)\n"
-"   --damp_sensitivity        damp factor adjustment sensitivity (= 0.005)\n"
-"   --local_exp_strength      local explosion (mouse1) punch/strength (= 10.0)\n"
-"   --global_exp_strength     global explosion (mouse2) punch/strength (= 20.0)\n"
+"   --local_exp_strength_max  local explosion (mouse1) maximum punch/strength (= 10.0)\n"
+"   --global_exp_strength_max global explosion (mouse2) maximum punch/strength (= 20.0)\n"
 "   --click_loading_time      time for the explosion to fully load (= 2.0)\n"
 "   --color_speed_cap         speed threshold for the 'fastest' color (= 10.0)\n"
 "   --help                    print this help";
@@ -80,7 +102,6 @@ const char* USAGE_STR =
 static const char* INSTRUCTION_STR =
 "Move your mouse cursor to change particles' point of attraction.\n"
 "Hold and release left/right mouse button to spawn local/global explosion. The longer you hold, the stronger the explosion.\n"
-"Use mouse scollback to control damp factor.\n"
 "Press ESCAPE/Q to quit.\n";
 
 static const char* VERTEX_SHADER_SOURCE =
@@ -135,7 +156,6 @@ void main()
 
 static constexpr int WINDOW_WIDTH = 1280;
 static constexpr int WINDOW_HEIGHT = 720;
-static constexpr float TIME_BETWEEN_FPS_REPORT = 2.0f;
 static constexpr size_t N_PARTICLES = 1'000'000;
 static constexpr unsigned long long SEED = 1234ull;
 static constexpr float PULL_STRENGTH = 5.f;
@@ -144,20 +164,11 @@ static constexpr float MASS_MIN = 0.5f;
 static constexpr float MASS_MAX = 7.0f;
 static constexpr float DAMP = 0.995f;
 static constexpr float DAMP_INTERVAL = 1.0f / 30;
-static constexpr float DAMP_SENSITIVITY = 0.005f;
 static constexpr float LOCAL_EXP_STRENGTH_MAX = 10.0f;
 static constexpr float GLOBAL_EXP_STRENGTH_MAX = 20.0f;
 static constexpr float CLICK_LOADING_TIME = 2.0f;
 static constexpr float COLOR_SPEED_CAP = 10.0f;
 static constexpr ComputeMode COMPUTE_MODE = ComputeMode::CUDA;
-
-/* variables */
-static int width, height;
-static SimUpdate sim_update;
-static float damp;
-static float damp_sensitivity;
-static float local_exp_strength_max, global_exp_strength_max;
-static float click_loading_time;
 
 int main(int argc, char* argv[])
 {
@@ -174,19 +185,10 @@ int main(int argc, char* argv[])
    sim_config.seed = SEED;
    sim_config.mass_min = MASS_MIN;
    sim_config.mass_max = MASS_MAX;
-
-   float damp_interval = DAMP_INTERVAL;
-   float color_speed_cap = COLOR_SPEED_CAP;
+   SimParams sim_params;
+   SimUpdate sim_update;
+   resetParamsToDefault(&sim_params, &sim_update);
    ComputeMode compute_mode = ComputeMode::NONE;
-
-   sim_update.pull_strength = PULL_STRENGTH;
-   sim_update.speed_mult = SPEED_MULT;
-
-   damp = DAMP;
-   damp_sensitivity = DAMP_SENSITIVITY;
-   local_exp_strength_max = LOCAL_EXP_STRENGTH_MAX;
-   global_exp_strength_max = GLOBAL_EXP_STRENGTH_MAX;
-   click_loading_time = CLICK_LOADING_TIME;
 
    /* Parse program arguments. */
    int pivot_idx = 1;
@@ -213,13 +215,12 @@ int main(int argc, char* argv[])
       GET_REQUIRED_ARGUMENT("mass_max", sim_config.mass_max);
       GET_REQUIRED_ARGUMENT("pull_strength", sim_update.pull_strength);
       GET_REQUIRED_ARGUMENT("speed_mult", sim_update.speed_mult);
-      GET_REQUIRED_ARGUMENT("damp", sim_update.damp);
-      GET_REQUIRED_ARGUMENT("damp_interval", damp_interval);
-      GET_REQUIRED_ARGUMENT("damp_sensitivity", damp_sensitivity);
-      GET_REQUIRED_ARGUMENT("local_exp_strength_max", local_exp_strength_max);
-      GET_REQUIRED_ARGUMENT("global_exp_strength_max", global_exp_strength_max);
-      GET_REQUIRED_ARGUMENT("click_loading_time", click_loading_time);
-      GET_REQUIRED_ARGUMENT("color_speed_cap", color_speed_cap);
+      GET_REQUIRED_ARGUMENT("damp", sim_params.damp);
+      GET_REQUIRED_ARGUMENT("damp_interval", sim_params.damp_interval);
+      GET_REQUIRED_ARGUMENT("local_exp_strength_max", sim_params.local_exp_strength_max);
+      GET_REQUIRED_ARGUMENT("global_exp_strength_max", sim_params.global_exp_strength_max);
+      GET_REQUIRED_ARGUMENT("click_loading_time", sim_params.click_loading_time);
+      GET_REQUIRED_ARGUMENT("color_speed_cap", sim_params.color_speed_cap);
       if (strcmp(flag, "cuda") == 0)
       {
          if (compute_mode != ComputeMode::NONE)
@@ -269,13 +270,16 @@ int main(int argc, char* argv[])
       glfwTerminate();
       ERROR("Failed to create GLFW window.");
    }
-
+   
+   WindowContext window_context;
+   window_context.sim_params = &sim_params;
+   window_context.sim_update = &sim_update;
    glfwMakeContextCurrent(window);
+   glfwSetWindowUserPointer(window, (void*)&window_context);
    windowResizeCallback(window, WINDOW_WIDTH, WINDOW_HEIGHT);
    glfwSetFramebufferSizeCallback(window, windowResizeCallback);
    glfwSetKeyCallback(window, keyInputCallback);
    glfwSetMouseButtonCallback(window, mouseInputCallback);
-   glfwSetScrollCallback(window, scrollCallback);
    glfwSwapInterval(0);
 
    if (glewInit() != GLEW_OK)
@@ -312,11 +316,19 @@ int main(int argc, char* argv[])
    GLuint shader = Graphics::createGraphicsShader(VERTEX_SHADER_SOURCE,
                                                   FRAGMENT_SHADER_SOURCE);
    GL_CALL(glUseProgram(shader));
+   GL_CALL(GLint max_speed_loc = glGetUniformLocation(shader, "max_speed"));
+   GL_CALL(GLint imax_speed_loc = glGetUniformLocation(shader, "imax_speed"));
+   GL_CALL(glUniform1f(max_speed_loc, sim_params.color_speed_cap));
+   GL_CALL(glUniform1f(imax_speed_loc, 1.0f / sim_params.color_speed_cap));
+
+   /* Setup ImGui. */
    {
-      GL_CALL(GLint max_speed_loc = glGetUniformLocation(shader, "max_speed"));
-      GL_CALL(glUniform1f(max_speed_loc, COLOR_SPEED_CAP));
-      GL_CALL(GLint imax_speed_loc = glGetUniformLocation(shader, "imax_speed"));
-      GL_CALL(glUniform1f(imax_speed_loc, 1.0f / COLOR_SPEED_CAP));
+      ImGui::CreateContext();
+      ImGui_ImplGlfw_InitForOpenGL(window, true);
+      ImGui_ImplOpenGL3_Init("#version 330");
+      ImGui::StyleColorsDark();
+      ImGuiIO& io = ImGui::GetIO();
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
    }
 
    /* Initialize simulation. */
@@ -340,9 +352,7 @@ int main(int argc, char* argv[])
    }
    print("Running simulation for ", sim_config.n_particles, " particles.");
 
-   int frames_drawn = 0;
    float last_loop_time = glfwGetTime();
-   float last_fps_time = last_loop_time;
    float last_damp_time = last_loop_time;
    
    while (!glfwWindowShouldClose(window))
@@ -353,24 +363,24 @@ int main(int argc, char* argv[])
       {
          double x, y;
          glfwGetCursorPos(window, &x, &y);
-         sim_update.mouse_pos.x = 2 * (x - 0.5f * width) / width;
-         sim_update.mouse_pos.y = -2 * (y - 0.5f * height) / height;
+         sim_update.mouse_pos.x = 2 * (x - 0.5f * window_context.width) /
+            window_context.width;
+         sim_update.mouse_pos.y = -2 * (y - 0.5f * window_context.height) /
+            window_context.height;
       }
-
       /* Calculate delta time. */
       {
          float now = glfwGetTime();
          sim_update.delta_time = now - last_loop_time;
          last_loop_time = now;
       }
-
       /* Calculate damp. */
       {
          float now = glfwGetTime();
          float passed = now - last_damp_time;
-         if (passed >= damp_interval)
+         if (passed >= sim_params.damp_interval)
          {
-            sim_update.damp = damp;
+            sim_update.damp = sim_params.damp;
             last_damp_time = now;
          }
          else
@@ -396,25 +406,41 @@ int main(int argc, char* argv[])
       sim_update.is_local_exp = false;
       sim_update.is_global_exp = false;
 
-      /* Draw. */
+      /* Draw particles. */
       GL_CALL(glDrawArrays(GL_POINTS, 0, sim_config.n_particles));
+
+      /* Draw ImGui. */
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      ImGui::Begin("Simulation Parameters");
+      ImGui::SliderFloat("Pull Strength", &sim_update.pull_strength, 0.0f, 50.0f);
+      ImGui::SliderFloat("Speed Mult", &sim_update.speed_mult, 0.0f, 10.0f);
+      ImGui::SliderFloat("Damp", &sim_params.damp, 0.0f, 1.0f);
+      ImGui::SliderFloat("Damp Interval", &sim_params.damp_interval, 0.0f, 0.5f);
+      ImGui::SliderFloat("Local Exp Strength Max", &sim_params.local_exp_strength_max, 0.0f, 50.0f);
+      ImGui::SliderFloat("Global Exp Strength Max", &sim_params.global_exp_strength_max, 0.0f, 100.0f);
+      ImGui::SliderFloat("Click Loading Time", &sim_params.click_loading_time, 0.005f, 10.0f);
+      if (ImGui::SliderFloat("Color Speed Cap", &sim_params.color_speed_cap, 0.0f, 100.0f))
+      {
+         GL_CALL(glUniform1f(max_speed_loc, sim_params.color_speed_cap));
+         GL_CALL(glUniform1f(imax_speed_loc, 1.0f / sim_params.color_speed_cap));
+      }
+      if (ImGui::Button("Reset defaults"))
+      {
+         resetParamsToDefault(&sim_params, &sim_update);
+         GL_CALL(glUniform1f(max_speed_loc, sim_params.color_speed_cap));
+         GL_CALL(glUniform1f(imax_speed_loc, 1.0f / sim_params.color_speed_cap));
+      }
+      ImGui::Text("Simulation average %.2f ms/frame (%.1f FPS)",
+            1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+      ImGui::End();
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+      /* Display. */
       glfwSwapBuffers(window);
       glfwPollEvents();
-
-      /* Count FPS. */
-      {
-         ++frames_drawn;
-         float now = glfwGetTime();
-         float passed = now - last_fps_time;
-         if (passed >= TIME_BETWEEN_FPS_REPORT)
-         {
-            float fps = frames_drawn / passed;
-            std::cout << "\rFPS: " << fps;
-            std::cout.flush();
-            frames_drawn = 0;
-            last_fps_time = now;
-         }
-      }
    }
 
    switch (compute_mode)
@@ -431,6 +457,9 @@ int main(int argc, char* argv[])
          assert(false);
    }
 
+   ImGui_ImplOpenGL3_Shutdown();
+   ImGui_ImplGlfw_Shutdown();
+   ImGui::DestroyContext();
    GL_CALL(glDeleteProgram(shader));
    GL_CALL(glDeleteBuffers(1, &vbo));
    GL_CALL(glDeleteVertexArrays(1, &vao));
@@ -439,14 +468,28 @@ int main(int argc, char* argv[])
    return 0;
 }
 
+void resetParamsToDefault(SimParams* sim_params, SimUpdate* sim_update)
+{
+   sim_update->pull_strength = PULL_STRENGTH;
+   sim_update->speed_mult = SPEED_MULT;
+   sim_params->damp = DAMP;
+   sim_params->damp_interval = DAMP_INTERVAL;
+   sim_params->local_exp_strength_max = LOCAL_EXP_STRENGTH_MAX;
+   sim_params->global_exp_strength_max = GLOBAL_EXP_STRENGTH_MAX;
+   sim_params->click_loading_time = CLICK_LOADING_TIME;
+   sim_params->color_speed_cap = COLOR_SPEED_CAP;
+}
+
 void glfwErrorCallback(int code, const char* desc)
 {
    ERROR("[GLFW Error] '", desc, "' (", code, ")");
 }
 
-void windowResizeCallback(GLFWwindow* window, int w, int h)
+void windowResizeCallback(GLFWwindow* window, int width, int height)
 {
-   width = w; height = h;
+   WindowContext* context = (WindowContext*)glfwGetWindowUserPointer(window);
+   context->width = width;
+   context->height = height;
    GL_CALL(glViewport(0, 0, width, height));
 }
 
@@ -462,25 +505,33 @@ void keyInputCallback(GLFWwindow* window, int key, int, int action, int)
    }
 }
 
-void mouseInputCallback(GLFWwindow*, int button, int action, int)
+void mouseInputCallback(GLFWwindow* window, int button, int action, int)
 {
    static ButtonState left_button_state = { GLFW_RELEASE };
    static ButtonState right_button_state = { GLFW_RELEASE };
+   WindowContext* context = (WindowContext*)glfwGetWindowUserPointer(window);
    switch (button)
    {
       case GLFW_MOUSE_BUTTON_LEFT:
-         updateButtonState(&left_button_state, action, &sim_update.is_local_exp,
-                           &sim_update.local_exp_strength, local_exp_strength_max);
+         updateButtonState(&left_button_state, action,
+                           &context->sim_update->is_local_exp,
+                           &context->sim_update->local_exp_strength,
+                           context->sim_params->local_exp_strength_max,
+                           context->sim_params->click_loading_time);
          break;
       case GLFW_MOUSE_BUTTON_RIGHT:
-         updateButtonState(&right_button_state, action, &sim_update.is_global_exp,
-                           &sim_update.global_exp_strength, global_exp_strength_max);
+         updateButtonState(&right_button_state, action,
+                           &context->sim_update->is_global_exp,
+                           &context->sim_update->global_exp_strength,
+                           context->sim_params->global_exp_strength_max,
+                           context->sim_params->click_loading_time);
          break;
    }
 }
 
 void updateButtonState(ButtonState* state, int action, bool* is_click_finished,
-                       float* click_strength, const float click_strength_max)
+                       float* click_strength, const float click_strength_max,
+                       const float click_loading_time)
 {
    if (action != state->last_action)
    {
@@ -499,13 +550,5 @@ void updateButtonState(ButtonState* state, int action, bool* is_click_finished,
       }
       state->last_action = action;
    }
-}
-
-void scrollCallback(GLFWwindow*, double, double yoff)
-{
-   damp += yoff * damp_sensitivity;
-   if (damp > 1) damp = 1;
-   else if (damp < 0) damp = 0;
-   print("damp=", std::setprecision(3), damp, std::setprecision(2));
 }
 
