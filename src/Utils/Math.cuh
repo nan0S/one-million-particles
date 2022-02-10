@@ -79,6 +79,11 @@ inline float length(vec2 u)
    return std::sqrt(magnitude(u));
 }
 
+inline size_t iceil(size_t x, size_t d)
+{
+   return (x + d - 1) / d;
+}
+
 inline std::ostream& operator<<(std::ostream& out, vec2 u)
 {
    return out << "(" << u.x << "," << u.y << ")";

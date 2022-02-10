@@ -2,17 +2,10 @@
 
 #include <GL/glew.h>
 
-#include "Math.cuh"
+#include "Simulation.h"
 
 namespace CPU
 {
-
-   void init(const size_t n_particles, const float mass_min,
-             const float mass_max, const unsigned long long seed);
-   void updateParticles(const size_t n_particles, const vec2 mouse_pos,
-                        const float dt, const float pull_strength,
-                        const float speed_mult, const float damp,
-                        const bool is_local_exp, const bool is_global_exp,
-                        const float local_exp_strength,
-                        const float global_exp_strength);
+   void init(const SimConfig* sim_config);
+   void updateParticles(const SimUpdate* sim_update);
 }

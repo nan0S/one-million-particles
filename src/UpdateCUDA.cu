@@ -15,93 +15,73 @@ namespace CUDA
    #define NPERTHREAD_UPDATE 12
 
    /* structs */
-   struct Memory
+   struct SimState
    {
-      vec2* pos;
-      vec2* vel;
-      float* imass;
-   };
-
-   struct SimulationState
-   {
+      size_t n_particles;
       cudaGraphicsResource_t resource;
-      Memory mem;
+      SimMemory mem;
    };
    
    /* forward declarations */
-   inline size_t iceil(size_t x, size_t d) { return (x + d - 1) / d; }
-
    __global__
-   void generateParticles(const Memory mem, const int N, const float imass_min,
-                          const float imass_diff, const unsigned long long seed);
+   void generateParticles(const SimConfig sim_config, const SimMemory mem);
    __device__
    vec2 getRandomUnitVector(curandState* state);
    __global__
-   void updateParticles(const Memory mem, const int N, const vec2 mouse_pos,
-                        const float dt, const float pull_strength,
-                        const float speed_mult, const float damp,
-                        const bool is_local_exp, const bool is_global_exp,
-                        const float local_exp_strength,
-                        const float global_exp_strength);
+   void updateParticles(const size_t n_particles, const SimMemory mem,
+                        const SimUpdate sim_update);
 
    /* variables */
-   static SimulationState state;
+   static SimState sim_state;
 
-   void init(GLuint vbo, const size_t n_particles, const float mass_min,
-             const float mass_max, const unsigned long long seed)
+   void init(const SimConfig* sim_config, GLuint vbo)
    {
+      sim_state.n_particles = sim_config->n_particles;
       /* Allocate buffer. */
       {
-         size_t buffer_size = n_particles * (2 * sizeof(vec2) + sizeof(float));
+         size_t buffer_size = sim_config->n_particles * (2 * sizeof(vec2) +
+                                                         sizeof(float));
          GL_CALL(glBufferData(GL_ARRAY_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW));
-         CUDA_CALL(cudaGraphicsGLRegisterBuffer(&state.resource, vbo,
+         CUDA_CALL(cudaGraphicsGLRegisterBuffer(&sim_state.resource, vbo,
                                                 cudaGraphicsRegisterFlagsNone));
       }
       /* Map buffers. */
       {
-         CUDA_CALL(cudaGraphicsMapResources(1, &state.resource));
+         CUDA_CALL(cudaGraphicsMapResources(1, &sim_state.resource));
          void* d_buffer;
          size_t size;
          CUDA_CALL(cudaGraphicsResourceGetMappedPointer(&d_buffer, &size,
-                                                        state.resource));
-         state.mem.pos = reinterpret_cast<vec2*>(d_buffer);
-         state.mem.vel = reinterpret_cast<vec2*>(state.mem.pos + n_particles);
-         state.mem.imass = reinterpret_cast<float*>(state.mem.vel + n_particles);
+                                                        sim_state.resource));
+         sim_state.mem = getMemoryFromBuffer(d_buffer, sim_state.n_particles);
       }
       /* Generate particles. */
       {
-         size_t spawn_total = iceil(n_particles, NPERTHREAD_INIT);
+         size_t spawn_total = iceil(sim_config->n_particles, NPERTHREAD_INIT);
          size_t nblocks = iceil(spawn_total, NTHREADS);
-         float imass_min = 1.0f / mass_max, imass_max = 1.0f / mass_min;
+         float imass_min = 1.0f / sim_config->mass_max;
+         float imass_max = 1.0f / sim_config->mass_min;
          float imass_diff = imass_max - imass_min;
-         CUDA_CALL(generateParticles<<<nblocks, NTHREADS>>>(state.mem, n_particles,
-                                                            imass_min, imass_diff,
-                                                            seed));
+         SimConfig cuda_sim_config = *sim_config;
+         cuda_sim_config.mass_min = imass_min;
+         cuda_sim_config.mass_max = imass_diff;
+         CUDA_CALL(generateParticles<<<nblocks, NTHREADS>>>(cuda_sim_config,
+                                                            sim_state.mem));
       }
-      CUDA_CALL(cudaGraphicsUnmapResources(1, &state.resource));
+      CUDA_CALL(cudaGraphicsUnmapResources(1, &sim_state.resource));
    }
 
-   void updateParticles(const size_t n_particles, const vec2 mouse_pos,
-                        const float dt, const float pull_strength,
-                        const float speed_mult, const float damp,
-                        const bool is_local_exp, const bool is_global_exp,
-                        const float local_exp_strength,
-                        const float global_exp_strength)
+   void updateParticles(const SimUpdate* sim_update)
    {
 #ifdef MEASURE_TIME
       static AggregateTimer timer("CUDA::updateParticles");
       timer.start();
 #endif
-      CUDA_CALL(cudaGraphicsMapResources(1, &state.resource));
-      size_t spawn_total = iceil(n_particles, NPERTHREAD_UPDATE);
+      CUDA_CALL(cudaGraphicsMapResources(1, &sim_state.resource));
+      size_t spawn_total = iceil(sim_state.n_particles, NPERTHREAD_UPDATE);
       size_t nblocks = iceil(spawn_total, NTHREADS);
-      CUDA_CALL(updateParticles<<<nblocks, NTHREADS>>>(state.mem,
-                                                       n_particles, mouse_pos, dt,
-                                                       pull_strength, speed_mult,
-                                                       damp, is_local_exp, is_global_exp,
-                                                       local_exp_strength,
-                                                       global_exp_strength));
-      CUDA_CALL(cudaGraphicsUnmapResources(1, &state.resource));
+      CUDA_CALL(updateParticles<<<nblocks, NTHREADS>>>(sim_state.n_particles,
+                                                       sim_state.mem, *sim_update));
+      CUDA_CALL(cudaGraphicsUnmapResources(1, &sim_state.resource));
 #ifdef MEASURE_TIME
       timer.stop();
 #endif
@@ -109,22 +89,22 @@ namespace CUDA
    
    void cleanup()
    {
-      CUDA_CALL(cudaGraphicsUnregisterResource(state.resource));
+      CUDA_CALL(cudaGraphicsUnregisterResource(sim_state.resource));
       CUDA_CALL(cudaDeviceReset());
    }
 
    __global__
-   void generateParticles(const Memory mem, const int N, const float imass_min,
-                          const float imass_diff, const unsigned long long seed)
+   void generateParticles(const SimConfig sim_config, const SimMemory mem)
    {
       size_t idx = threadIdx.x + NPERTHREAD_INIT * blockIdx.x * blockDim.x;
       curandState state;
-      curand_init(seed, idx, 0, &state);
-      for (int i = 0; i < NPERTHREAD_INIT && idx < N; ++i)
+      curand_init(sim_config.seed, idx, 0, &state);
+      for (int i = 0; i < NPERTHREAD_INIT && idx < sim_config.n_particles; ++i)
       {
          mem.pos[idx] = getRandomUnitVector(&state);
          mem.vel[idx] = getRandomUnitVector(&state);
-         mem.imass[idx] = imass_min + imass_diff * curand_uniform(&state);
+         mem.imass[idx] = sim_config.mass_min + sim_config.mass_max *
+            curand_uniform(&state);
          idx += blockDim.x;
       }
    }
@@ -138,15 +118,11 @@ namespace CUDA
    }
 
    __global__
-   void updateParticles(const Memory mem, const int N, const vec2 mouse_pos,
-                        const float dt, const float pull_strength,
-                        const float speed_mult, const float damp,
-                        const bool is_local_exp, const bool is_global_exp,
-                        const float local_exp_strength,
-                        const float global_exp_strength)
+   void updateParticles(const size_t n_particles, const SimMemory mem,
+                        const SimUpdate sim_update)
    {
       size_t idx = threadIdx.x + NPERTHREAD_UPDATE * blockIdx.x * blockDim.x;
-      for (int i = 0; i < NPERTHREAD_UPDATE && idx < N; ++i)
+      for (int i = 0; i < NPERTHREAD_UPDATE && idx < n_particles; ++i)
       {
          vec2 p = mem.pos[idx];
          vec2 v = mem.vel[idx];
@@ -154,18 +130,18 @@ namespace CUDA
 
          /* Apply force to velocity. */
          {
-            vec2 f = mouse_pos - p;
-            float f_mult = im * pull_strength * dt;
+            vec2 f = sim_update.mouse_pos - p;
+            float f_mult = im * sim_update.pull_strength * sim_update.delta_time;
             v += f_mult * f;
-            if (is_local_exp)
-               v -= (im * local_exp_strength / magnitude(f)) * f;
-            if (is_global_exp)
-               v -= (im * global_exp_strength / length(f)) * f;
-            v *= damp;
+            if (sim_update.is_local_exp)
+               v -= (im * sim_update.local_exp_strength / magnitude(f)) * f;
+            if (sim_update.is_global_exp)
+               v -= (im * sim_update.global_exp_strength / length(f)) * f;
+            v *= sim_update.damp;
          }
          /* Apply velocity to position. */
          {
-            float v_mult = speed_mult * dt;
+            float v_mult = sim_update.speed_mult * sim_update.delta_time;
             p += v_mult * v;
          }
 

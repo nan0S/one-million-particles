@@ -1,6 +1,5 @@
 #include "UpdateCPU.h"
 
-#include <random>
 #include <thread>
 
 #include "Utils/Error.h"
@@ -13,68 +12,37 @@ namespace CPU
    #define NTHREADS 8
    
    /* structs */
-   struct SimulationState
+   struct SimState
    {
-      vec2* pos;
-      vec2* vel;
-      float* imass;
+      size_t n_particles;
+      size_t n_per_thread;
+      SimMemory mem;
    };
 
    /* forward declarations */
    static void updateParticlesLocal(const size_t begin, const size_t end,
-                                    const vec2 mouse_pos, const float dt,
-                                    const float pull_strength,
-                                    const float speed_mult, const float damp,
-                                    const bool is_local_exp,
-                                    const bool is_global_exp,
-                                    const float local_exp_strength,
-                                    const float global_exp_strength);
+                                    const SimUpdate* sim_update);
 
    /* variables */
-   static SimulationState state;
+   static SimState sim_state;
 
-   void init(const size_t n_particles, const float mass_min,
-             const float mass_max, const unsigned long long seed)
+   void init(const SimConfig* sim_config)
    {
+      sim_state.n_particles = sim_config->n_particles;
+      sim_state.n_per_thread = sim_state.n_particles / NTHREADS;
       /* Allocate buffers. */
       {
          GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_READ_BIT |
                             GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-         size_t total_memory = n_particles * (2 * sizeof(vec2) + sizeof(float));
-         GL_CALL(glBufferStorage(GL_ARRAY_BUFFER, total_memory, 0, flags));
-         GL_CALL(void* buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0,
-                                                 total_memory, flags));
-         state.pos = reinterpret_cast<vec2*>(buffer);
-         state.vel = reinterpret_cast<vec2*>(state.pos + n_particles);
-         state.imass = reinterpret_cast<float*>(state.vel + n_particles);
+         size_t buffer_size = getTotalBufferSize(sim_state.n_particles);
+         GL_CALL(glBufferStorage(GL_ARRAY_BUFFER, buffer_size, 0, flags));
+         GL_CALL(void* buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, buffer_size, flags));
+         sim_state.mem = getMemoryFromBuffer(buffer, sim_state.n_particles);
       }
-      /* Generate particles. */
-      {
-         std::mt19937 rng(seed);
-         std::uniform_real_distribution<float> adist(0, 2 * PI);
-         std::uniform_real_distribution<float> ldist(0, 1);
-         float imass_min = 1.0f / mass_max, imass_max = 1.0f / mass_min;
-         std::uniform_real_distribution<float> imdist(imass_min, imass_max);
-         auto getRandomUnitVector = [&rng, &adist, &ldist](){
-            float angle = adist(rng);
-            float len = ldist(rng);
-            return len * vec2{ std::cos(angle), std::sin(angle) };
-         };
-         for (size_t i = 0; i < n_particles; ++i)
-         {
-            state.pos[i] = getRandomUnitVector();
-            state.vel[i] = getRandomUnitVector();
-            state.imass[i] = imdist(rng);
-         }
-      }
+      generateParticlesOnCPU(sim_config, &sim_state.mem);
    }
 
-   void updateParticles(const size_t n_particles, const vec2 mouse_pos,
-                        const float dt, const float pull_strength,
-                        const float speed_mult, const float damp,
-                        const bool is_local_exp, const bool is_global_exp,
-                        const float local_exp_strength,
-                        const float global_exp_strength)
+   void updateParticles(const SimUpdate* sim_update)
    {
 #ifdef MEASURE_TIME
       static AggregateTimer timer("CPU::updateParticles");
@@ -83,20 +51,14 @@ namespace CPU
       /* Update particles. */
       {
          static std::thread threads[NTHREADS];
-         size_t n_per_thread = n_particles / NTHREADS;
-         size_t begin = 0, end = n_per_thread;
+         size_t begin = 0, end = sim_state.n_per_thread;
          for (size_t i = 0; i < NTHREADS; ++i)
          {
-            threads[i] = std::thread(updateParticlesLocal, begin, end, 
-                                     mouse_pos, dt, pull_strength, speed_mult,
-                                     damp, is_local_exp, is_global_exp,
-                                     local_exp_strength, global_exp_strength);
+            threads[i] = std::thread(updateParticlesLocal, begin, end, sim_update);
             begin = end;
-            end += n_per_thread;
+            end += sim_state.n_per_thread;
          }
-         updateParticlesLocal(begin, n_particles, mouse_pos, dt,
-                              pull_strength, speed_mult, damp, is_local_exp,
-                              is_global_exp, local_exp_strength, global_exp_strength);
+         updateParticlesLocal(begin, sim_state.n_particles, sim_update);
          for (int i = 0; i < NTHREADS; ++i)
             threads[i].join();
       }
@@ -117,33 +79,28 @@ namespace CPU
    }
 
    void updateParticlesLocal(const size_t begin, const size_t end,
-                             const vec2 mouse_pos, const float dt,
-                             const float pull_strength, const float speed_mult,
-                             const float damp, const bool is_local_exp,
-                             const bool is_global_exp,
-                             const float local_exp_strength,
-                             const float global_exp_strength)
+                             const SimUpdate* sim_update)
    {
       for (size_t i = begin; i < end; ++i)
       {
-         vec2 p = state.pos[i];
-         vec2 v = state.vel[i];
-         float im = state.imass[i];
+         vec2 p = sim_state.mem.pos[i];
+         vec2 v = sim_state.mem.vel[i];
+         float im = sim_state.mem.imass[i];
 
-         vec2 f = mouse_pos - p;
-         float f_mult = im * pull_strength * dt;
+         vec2 f = sim_update->mouse_pos - p;
+         float f_mult = im * sim_update->pull_strength * sim_update->delta_time;
          v += f_mult * f;
-         if (is_local_exp)
-            v -= (im * local_exp_strength / magnitude(f)) * f;
-         if (is_global_exp)
-            v -= (im * global_exp_strength / length(f)) * f;
-         v *= damp;
+         if (sim_update->is_local_exp)
+            v -= (im * sim_update->local_exp_strength / magnitude(f)) * f;
+         if (sim_update->is_global_exp)
+            v -= (im * sim_update->global_exp_strength / length(f)) * f;
+         v *= sim_update->damp;
          
-         float v_mult = speed_mult * dt;
+         float v_mult = sim_update->speed_mult * sim_update->delta_time;
          p += v_mult * v;
 
-         state.pos[i] = p;
-         state.vel[i] = v;
+         sim_state.mem.pos[i] = p;
+         sim_state.mem.vel[i] = v;
       }
    }
 
