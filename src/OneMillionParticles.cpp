@@ -324,11 +324,16 @@ int main(int argc, char* argv[])
    /* Setup ImGui. */
    {
       ImGui::CreateContext();
-      ImGui_ImplGlfw_InitForOpenGL(window, true);
-      ImGui_ImplOpenGL3_Init("#version 330");
-      ImGui::StyleColorsDark();
       ImGuiIO& io = ImGui::GetIO();
       io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+      io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+      io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+      ImGui::StyleColorsDark();
+      ImGuiStyle& style = ImGui::GetStyle();
+      style.WindowRounding = 0.0f;
+      style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+      ImGui_ImplGlfw_InitForOpenGL(window, true);
+      ImGui_ImplOpenGL3_Init("#version 330");
    }
 
    /* Initialize simulation. */
@@ -426,7 +431,7 @@ int main(int argc, char* argv[])
          GL_CALL(glUniform1f(max_speed_loc, sim_params.color_speed_cap));
          GL_CALL(glUniform1f(imax_speed_loc, 1.0f / sim_params.color_speed_cap));
       }
-      if (ImGui::Button("Reset defaults"))
+      if (ImGui::Button("Reset to defaults"))
       {
          resetParamsToDefault(&sim_params, &sim_update);
          GL_CALL(glUniform1f(max_speed_loc, sim_params.color_speed_cap));
@@ -437,6 +442,10 @@ int main(int argc, char* argv[])
       ImGui::End();
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+      GLFWwindow* backup_current_context = glfwGetCurrentContext();
+      ImGui::UpdatePlatformWindows();
+      ImGui::RenderPlatformWindowsDefault();
+      glfwMakeContextCurrent(backup_current_context);
 
       /* Display. */
       glfwSwapBuffers(window);
