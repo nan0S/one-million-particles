@@ -38,5 +38,5 @@ $(BUILD_DIR)/%.o: %.cu Makefile
 	nvcc -MMD -MP $(NVCCFLAGS) -c -o $@ $< $(INC)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) compile_commands.json
+	rm -rf $(BUILD_DIR) $(TARGET) compile_commands.json imgui.ini
 
