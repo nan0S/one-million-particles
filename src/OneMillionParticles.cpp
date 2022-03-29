@@ -81,7 +81,7 @@ static void updateButtonState(ButtonState* state, int action, bool* is_click_fin
 const char* USAGE_STR =
 "Usage: ./OneMillionParticles [OPTION]...\n\n"
 "Run particle simulation that follow mouse pointer.\n\n"
-"list of possible options:\n"
+"List of possible options:\n"
 "   --n_particles             number of particles (= 1000000)\n"
 "   --cuda                    run simulation using CUDA (DEFAULT)\n"
 "   --cpu                     run simulation using CPU\n"
